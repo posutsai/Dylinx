@@ -45,7 +45,7 @@ void *hash(void *n_thread) {
 	int32_t bin = rand() % g_n_barrows;
 	// Issues may happen here, since the core operations is too short.
 	v = g_barrows[bin];
-	for (int i = 0; i < 1 << 22; i++)
+	for (int i = 0; i < g_op_length; i++)
 		t++;
 	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end_ts);
 	g_records[*((int32_t *)n_thread)] = (op_record_t) {
@@ -72,6 +72,7 @@ int main(int argc, char *argv[]) {
 	sprintf(output_filename, "records/%d_%d_%d_v%d.tsv", g_n_barrows, g_op_length, cores, 0);
 	for (uint32_t v = 0; access( output_filename, F_OK ) != -1; v++)
 		sprintf(output_filename, "records/%d_%d_%d_v%d.tsv", g_n_barrows, g_op_length, cores, v);
+	printf("%s\n", output_filename);
 	g_barrows = (int32_t *)malloc(g_n_barrows * sizeof(int32_t));
 	for (int i; i < g_n_barrows; i++)
 		g_barrows[i] = rand();
