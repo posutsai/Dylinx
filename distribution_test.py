@@ -17,24 +17,27 @@ def bhattacharyya(a, b):
         raise ValueError("a and b must be of the same size")
     return -math.log(sum((math.sqrt(u * w) for u, w in zip(a, b))))
 
-def post_analysis(record_path, n_barrows):
-    intervals = {i: [] for i in range(n_barrows)}
+def post_analysis(record_path):
+    intervals = {}
     with open(record_path) as df:
         for l in csv.reader(df, delimiter="\t"):
+            if float(l[0]) > float(l[1]):
+                continue
+            if int(l[2]) not in intervals.keys():
+                intervals[int(l[2])] = []
             intervals[int(l[2])].append({"entry": float(l[0]), "exit": float(l[1])})
-    intervals = {i: filter(lambda intv: intv["exit"] > intv["entry"], intervals[i]) for i in range(n_barrows)}
-    intervals = {i: sorted(intervals[i], key=lambda k: k['entry']) for i in range(n_barrows)}
+    intervals = {b: sorted(intervals[b], key=lambda k: k['entry']) for b in intervals.keys()}
     # Note:
     # When the amount of samples is really low, there is possiblity that no thread get into
     # certain keys.
-    start_time = int(min([ intervals[i][0]['entry'] for i in range(n_barrows)]))
-    end_time = int(max([ intervals[i][-1]['exit'] for i in range(n_barrows)]))
+    start_time = int(min([ v[0]['entry'] for v in intervals.values()]))
+    end_time = int(max([ v[-1]['exit'] for v in intervals.values()]))
     cnt = 0
-    pivots = {i: 0 for i in range(n_barrows)}
+    pivots = {k: 0 for k in intervals.keys()}
     hist = []
     for bin, t in enumerate(range(start_time, end_time, BIN_LENGTH)):
         cnt = 0
-        for k in range(n_barrows):
+        for k in intervals.keys():
             rc = 0
             for i, op in enumerate(intervals[k][ pivots[k]: ]):
                 if op['entry'] >= t + BIN_LENGTH:
@@ -83,19 +86,19 @@ def poisson_vs_binomial():
     poisson = []
     binom = []
     real_prob = []
-    for i in range(2, 32, 1):
+    for i in np.arange(0.0, 1.0, 0.02):
         record_path = gen_dataset(4, i, 16384, "a.out")
-        counts = post_analysis(record_path, i)
+        counts = post_analysis(record_path)
         lda = get_poisson_lambda(counts)
-        print(lda, stats.poisson.pmf(0, lda))
+        print(i, lda, stats.poisson.pmf(0, lda))
         hash_prob.append(i)
         poisson.append(stats.poisson.pmf(0, lda))
-        binom.append(stats.binom.pmf(0, 4, 1 / i) + stats.binom.pmf(1, 4, 1 / i))
+        binom.append(stats.binom.pmf(0, 5, i) + stats.binom.pmf(1, 4, i))
         real_prob.append(uncontent_real_prob(counts))
     fig, ax = plt.subplots()
     plt.title("Poisson descripe Race Condition better")
     plt.ylabel("uncontention prob")
-    plt.xlabel("barrow number")
+    plt.xlabel("crtical section ratio")
     l1, = ax.plot(hash_prob, real_prob, label='real probability')
     l1.set_dashes([1, 2, 1, 2])
     l2, = ax.plot(hash_prob, poisson, label='poisson')
