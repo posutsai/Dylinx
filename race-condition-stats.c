@@ -8,11 +8,12 @@
 #include <sys/mman.h>
 
 #define N_THREAD 16384
-#define N_BARROW 1000
+#define N_BARROW 128
+#define TEN_POW_9 1000000000
 
 typedef struct op_record {
-	time_t entry;
-	time_t exit;
+	float entry;
+	float exit;
 	int32_t bin;
 } op_record_t;
 
@@ -49,8 +50,8 @@ void *hash(void *n_thread) {
 		t++;
 	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end_ts);
 	g_records[*((int32_t *)n_thread)] = (op_record_t) {
-		.entry = start_ts.tv_nsec * 1.0,
-		.exit = end_ts.tv_nsec * 1.0,
+		.entry = start_ts.tv_sec + start_ts.tv_nsec * 1. / TEN_POW_9,
+		.exit = end_ts.tv_sec + end_ts.tv_nsec * 1. / TEN_POW_9,
 		.bin = v
 	};
 	free(n_thread);
@@ -98,7 +99,7 @@ int main(int argc, char *argv[]) {
 		pthread_join(tids[i], NULL);
 	FILE *fp = fopen(output_filename, "w+");
 	for (int i = 0; i < N_THREAD; i++)
-		fprintf(fp, "%ld\t%ld\t%d\n", g_records[i].entry, g_records[i].exit, g_records[i].bin);
+		fprintf(fp, "%f\t%f\t%d\n", g_records[i].entry, g_records[i].exit, g_records[i].bin);
 	fclose(fp);
 	if (mem_unlock((void *)g_barrows, N_BARROW * sizeof(int)) == -1 ||
 		mem_unlock((void *)g_records, N_THREAD * sizeof(op_record_t)) == -1)

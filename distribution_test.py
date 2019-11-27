@@ -8,7 +8,7 @@ import subprocess
 import random
 import matplotlib.pyplot as plt
 
-BIN_LENGTH = 50000 # ms
+BIN_LENGTH = 10 # ms
 N_CPU_CORE = 40
 
 def bhattacharyya(a, b):
@@ -18,24 +18,23 @@ def bhattacharyya(a, b):
     return -math.log(sum((math.sqrt(u * w) for u, w in zip(a, b))))
 
 def post_analysis(record_path):
+    print(record_path)
     intervals = {}
     with open(record_path) as df:
         for l in csv.reader(df, delimiter="\t"):
-            if float(l[0]) > float(l[1]):
-                continue
             if int(l[2]) not in intervals.keys():
                 intervals[int(l[2])] = []
-            intervals[int(l[2])].append({"entry": float(l[0]), "exit": float(l[1])})
+            intervals[int(l[2])].append({"entry": float(l[0]) * 1000, "exit": float(l[1]) * 1000})
     intervals = {b: sorted(intervals[b], key=lambda k: k['entry']) for b in intervals.keys()}
     # Note:
     # When the amount of samples is really low, there is possiblity that no thread get into
     # certain keys.
-    start_time = int(min([ v[0]['entry'] for v in intervals.values()]))
-    end_time = int(max([ v[-1]['exit'] for v in intervals.values()]))
+    start_time = min([ v[0]['entry'] for v in intervals.values()])
+    end_time = max([ v[-1]['exit'] for v in intervals.values()])
     cnt = 0
     pivots = {k: 0 for k in intervals.keys()}
     hist = []
-    for bin, t in enumerate(range(start_time, end_time, BIN_LENGTH)):
+    for bin, t in enumerate(np.arange(start_time, end_time, BIN_LENGTH)):
         cnt = 0
         for k in intervals.keys():
             rc = 0
@@ -77,20 +76,23 @@ def gen_dataset(n_cpu, n_barrows, op_length, executable_path):
     np.random.shuffle(perm)
     cpus = perm[:n_cpu]
     cpu_arg = ','.join(map(str, cpus))
-    output = subprocess.run(args=["taskset", f"{cpu_arg}", f"./{executable_path}", str(n_barrows), str(op_length), str(n_cpu)],
-                             capture_output=True, text=True)
-    return output.stdout.split('\n')[0]
+    # output = subprocess.run(args=["taskset", "-c", f"{cpu_arg}", f"./{executable_path}", str(n_barrows), str(op_length), str(n_cpu)],
+    #                          capture_output=True, text=True)
+    with subprocess.Popen(args=["taskset", "-c", f"{cpu_arg}", f"./{executable_path}", str(n_barrows), str(op_length), str(n_cpu)], stdout=subprocess.PIPE) as proc:
+        return proc.stdout.read().decode('utf-8').split('\n')[0]
+    # return output.stdout.split('\n')[0]
 
 def poisson_vs_binomial():
     hash_prob = []
     poisson = []
     binom = []
     real_prob = []
-    for i in np.arange(0.0, 1.0, 0.02):
-        record_path = gen_dataset(4, i, 16384, "a.out")
+    for i in np.arange(0., 1.0, 0.05):
+        record_path = gen_dataset(3, i, 2 ** 20, "a.out")
         counts = post_analysis(record_path)
+        print(counts)
         lda = get_poisson_lambda(counts)
-        print(i, lda, stats.poisson.pmf(0, lda))
+        print("rc_rate: {:.2f} lambda: {:.2f} uncontention_prob: {:.2f}".format(i, lda, stats.poisson.pmf(0, lda)))
         hash_prob.append(i)
         poisson.append(stats.poisson.pmf(0, lda))
         binom.append(stats.binom.pmf(0, 5, i) + stats.binom.pmf(1, 4, i))
@@ -98,7 +100,7 @@ def poisson_vs_binomial():
     fig, ax = plt.subplots()
     plt.title("Poisson descripe Race Condition better")
     plt.ylabel("uncontention prob")
-    plt.xlabel("crtical section ratio")
+    plt.xlabel("hash collision ratio")
     l1, = ax.plot(hash_prob, real_prob, label='real probability')
     l1.set_dashes([1, 2, 1, 2])
     l2, = ax.plot(hash_prob, poisson, label='poisson')
