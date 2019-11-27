@@ -8,7 +8,7 @@
 #include <sys/mman.h>
 
 #define N_THREAD 16384
-#define N_BARROW 128
+#define N_BARROW 1000
 #define TEN_POW_9 1000000000
 
 typedef struct op_record {

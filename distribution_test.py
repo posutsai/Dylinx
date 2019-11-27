@@ -8,7 +8,7 @@ import subprocess
 import random
 import matplotlib.pyplot as plt
 
-BIN_LENGTH = 10 # ms
+BIN_LENGTH = 5 # ms
 N_CPU_CORE = 40
 
 def bhattacharyya(a, b):
@@ -37,6 +37,8 @@ def post_analysis(record_path):
     for bin, t in enumerate(np.arange(start_time, end_time, BIN_LENGTH)):
         cnt = 0
         for k in intervals.keys():
+            if k != 0:
+                continue
             rc = 0
             for i, op in enumerate(intervals[k][ pivots[k]: ]):
                 if op['entry'] >= t + BIN_LENGTH:
@@ -53,8 +55,9 @@ def post_analysis(record_path):
                 if op['entry'] > t and op['exit'] < t + BIN_LENGTH:
                     rc += 1
                     continue
-            if rc > 1:
-                cnt += 1
+            # if rc > 1:
+            #     cnt += 1
+            cnt = rc
         hist.append(cnt)
     unique, count = np.unique(hist, return_counts=True)
     counts = dict(zip(unique, count))
@@ -69,7 +72,7 @@ def get_poisson_lambda(counts):
 
 
 def uncontent_real_prob(counts):
-    return counts[0] / sum(counts.values())
+    return (counts[0] + counts[1]) / sum(counts.values())
 
 def gen_dataset(n_cpu, n_barrows, op_length, executable_path):
     perm = [i for i in range(N_CPU_CORE)]
@@ -92,13 +95,13 @@ def poisson_vs_binomial():
         counts = post_analysis(record_path)
         print(counts)
         lda = get_poisson_lambda(counts)
-        print("rc_rate: {:.2f} lambda: {:.2f} uncontention_prob: {:.2f}".format(i, lda, stats.poisson.pmf(0, lda)))
+        print("rc_rate: {:.2f} lambda: {:.2f} uncontention_prob: {:.2f}".format(i, lda, stats.poisson.pmf(0, lda) + stats.poisson.pmf(1, lda)))
         hash_prob.append(i)
-        poisson.append(stats.poisson.pmf(0, lda))
+        poisson.append(stats.poisson.pmf(0, lda) + stats.poisson.pmf(1, lda))
         binom.append(stats.binom.pmf(0, 5, i) + stats.binom.pmf(1, 4, i))
         real_prob.append(uncontent_real_prob(counts))
     fig, ax = plt.subplots()
-    plt.title("Poisson descripe Race Condition better")
+    plt.title("Poisson describe Race Condition better")
     plt.ylabel("uncontention prob")
     plt.xlabel("hash collision ratio")
     l1, = ax.plot(hash_prob, real_prob, label='real probability')
