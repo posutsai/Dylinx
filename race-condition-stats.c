@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/mman.h>
+#include <sys/sysinfo.h>
 
 #define N_THREAD 16384
 #define N_BARROW 1000
@@ -19,6 +20,7 @@ typedef struct op_record {
 
 op_record_t g_records[N_THREAD];
 int32_t *g_barrows;
+int32_t g_n_barrow;
 int32_t g_op_length = 0;
 
 int32_t mem_lock(void *addr, size_t size) {
@@ -43,7 +45,7 @@ void *hash(void *n_thread) {
 	struct timespec start_ts, end_ts;
 	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &start_ts);
 	int32_t v, t;
-	int32_t bin = rand() % N_BARROW;
+	int32_t bin = rand() % g_n_barrow;
 	// Issues may happen here, since the core operations is too short.
 	v = g_barrows[bin];
 	for (int i = 0; i < g_op_length; i++)
@@ -62,21 +64,22 @@ void *hash(void *n_thread) {
 // constantly and try to eliminate the side effect of memory swapping. NUMA
 // factor is not considered yet.
 int main(int argc, char *argv[]) {
-	if (argc != 4) {
-		perror("The program requires two arguments as number of barrows, operation length and number of cores.\n");
+	if (argc != 5) {
+		perror("The program requires three arguments as hash collision prob, operation length and bucket core ratio.\n");
 		exit(-1);
 	}
 	float rc_rate = atof(argv[1]);
 	g_op_length = atoi(argv[2]);
 	int32_t cores = atoi(argv[3]);
+	g_n_barrow = atoi(argv[4]);
 	char output_filename[200];
-	sprintf(output_filename, "records/%.3f_%d_%d_v%d.tsv", rc_rate, g_op_length, cores, 0);
+	sprintf(output_filename, "records/%.3f_%d_%d_%d_v%d.tsv", rc_rate, g_op_length, cores, g_n_barrow, 0);
 	for (uint32_t v = 0; access( output_filename, F_OK ) != -1; v++)
 		sprintf(output_filename, "records/%.3f_%d_%d_v%d.tsv", rc_rate, g_op_length, cores, v);
 	printf("%s\n", output_filename);
-	g_barrows = (int32_t *)malloc(N_BARROW * sizeof(int32_t));
-	for (int i = 0; i < N_BARROW; i++)
-		if (i < N_BARROW * rc_rate)
+	g_barrows = (int32_t *)malloc(g_n_barrow * sizeof(int32_t));
+	for (int i = 0; i < g_n_barrow; i++)
+		if (i < g_n_barrow * rc_rate)
 			g_barrows[i] = 0;
 		else
 			g_barrows[i] = i;
@@ -86,7 +89,7 @@ int main(int argc, char *argv[]) {
 #else
 	srand(time(NULL));
 #endif
-	if (mem_lock((void *)g_barrows, N_BARROW * sizeof(int32_t)) == -1 ||
+	if (mem_lock((void *)g_barrows, g_n_barrow * sizeof(int32_t)) == -1 ||
 		mem_lock((void *)g_records, N_THREAD * sizeof(op_record_t) == -1))
 		perror("Error happens while locking memory in mem_lock function.\n");
 	pthread_t tids[N_THREAD];
@@ -101,7 +104,7 @@ int main(int argc, char *argv[]) {
 	for (int i = 0; i < N_THREAD; i++)
 		fprintf(fp, "%f\t%f\t%d\n", g_records[i].entry, g_records[i].exit, g_records[i].bin);
 	fclose(fp);
-	if (mem_unlock((void *)g_barrows, N_BARROW * sizeof(int)) == -1 ||
+	if (mem_unlock((void *)g_barrows, g_n_barrow * sizeof(int)) == -1 ||
 		mem_unlock((void *)g_records, N_THREAD * sizeof(op_record_t)) == -1)
 		perror("Error happens while unlocking memory in mem_unlock function.\n");
 	free(g_barrows);
