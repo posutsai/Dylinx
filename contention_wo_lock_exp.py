@@ -78,12 +78,12 @@ def get_poisson_lambda(counts):
 def uncontent_real_prob(counts):
     return (counts[0] + counts[1]) / sum(counts.values())
 
-def gen_dataset(n_cpu, hc_prob, op_length, n_barrow, executable_path):
+def gen_dataset(n_cpu, hc_prob, op_length, executable_path):
     perm = [i for i in range(N_CPU_CORE)]
     np.random.shuffle(perm)
-    cpus = perm[:n_cpu]
+    cpus = perm[:int(n_cpu)]
     cpu_arg = ','.join(map(str, cpus))
-    with subprocess.Popen(args=["taskset", "-c", f"{cpu_arg}", f"./{executable_path}", str(hc_prob), str(op_length), str(n_cpu), str(n_barrow)], stdout=subprocess.PIPE) as proc:
+    with subprocess.Popen(args=["taskset", "-c", f"{cpu_arg}", f"./{executable_path}", str(hc_prob), str(op_length), str(n_cpu)], stdout=subprocess.PIPE) as proc:
         return proc.stdout.read().decode('utf-8').split('\n')[0]
 
 def poisson_vs_binomial(n_cpu, n_barrow, op_len, start, end, step):
@@ -95,7 +95,7 @@ def poisson_vs_binomial(n_cpu, n_barrow, op_len, start, end, step):
         record_path = gen_dataset(3, i, op_len, C_EXECUTABLE)
         counts = post_analysis(record_path)
         lda = get_poisson_lambda(counts)
-        print("rc_rate: {:.2f} lambda: {:.2f} uncontention_prob: {:.2f}".format(i, lda, stats.poisson.pmf(0, lda) + stats.poisson.pmf(1, lda)))
+        # print("rc_rate: {:.2f} lambda: {:.2f} uncontention_prob: {:.2f}".format(i, lda, stats.poisson.pmf(0, lda) + stats.poisson.pmf(1, lda)))
         hash_prob.append(i)
         poisson.append(stats.poisson.pmf(0, lda) + stats.poisson.pmf(1, lda))
         binom.append(stats.binom.pmf(0, 5, i) + stats.binom.pmf(1, 4, i))
@@ -113,27 +113,32 @@ def poisson_vs_binomial(n_cpu, n_barrow, op_len, start, end, step):
     ax.legend()
     plt.savefig("poisson_vs_binomial.png")
 
-def bucket_core_ratio_vs_lambda(cores, op_length, start, end, num):
+def cores_vs_lambda(op_length, start, end, step):
     # Intuitive experiment design is to adjust the number of  processors slightly
     # bit by bit. However, after the second thought, fixing the core number and tune
     # the ratio between cores and barrows may work as well.
     results = {}
-    for r in tqdm(np.geomspace(start, end, num)):
-        n_barrow = int(r * cores)
+    hc_from = 0.05
+    hc_to = 1.
+    hc_step = 0.05
+    for c in tqdm(np.arange(start, end, step)):
         ldas = []
-        for hc_prob in np.arange(0., 1., 0.05):
-            record_path = gen_dataset(cores, hc_prob, op_length, n_barrow, C_EXECUTABLE)
+        for hc_prob in np.arange(hc_from, hc_to, hc_step):
+            record_path = gen_dataset(c, hc_prob, op_length, C_EXECUTABLE)
             counts = post_analysis(record_path)
+            lda = get_poisson_lambda(counts)
+            # print(counts)
+            # print("lambda: {:.2f}, hc_prob: {:.2f}, cores: {}".format(lda, hc_prob, c))
             ldas.append(get_poisson_lambda(counts))
-        results[r] = ldas
+        results[c] = ldas
     fig, ax = plt.subplots()
-    plt.title("The effect of lambda caused by barrow / cpu ratio")
+    plt.title("core number vs lambda")
     plt.ylabel("lambda")
     plt.xlabel("hash collision prob")
-    for r in results.keys():
-        l = ax.plot(np.arange(0., 1., 0.05), results[r], label="r={:.2f}".format(r))
+    for c in results.keys():
+        l = ax.plot(np.arange(hc_from, hc_to, hc_step), results[c], label="c={}".format(int(c)))
     ax.legend()
-    plt.savefig("BCratio_vs_lambda.png")
+    plt.savefig("cores_vs_lambda.png")
 
 def process_arg():
     parser = ArgumentParser()
@@ -181,9 +186,10 @@ def process_arg():
         elif args.var_mode == "CoreBuckRatio2Lda":
             pat = re.compile("[-+]?([0-9]*\.[0-9]+|[0-9]+)~[-+]?([0-9]*\.[0-9]+|[0-9]+),[-+]?([0-9]*\.[0-9]+|[0-9]+)")
             m = pat.match(args.range)
-            start, end, num = map(lambda g: float(g), m.groups())
-            assert(num > 2), "Supposed to have more than two numbers in geometric space"
-            bucket_core_ratio_vs_lambda(args.core, args.op_len, start, end, num)
+            start, end, step = map(lambda g: float(g), m.groups())
+            assert(start <= total_core), f"The number of processors should not greater than {total_core}"
+            assert(start < end), "Arguments error"
+            cores_vs_lambda(args.op_len, start, end, step)
         else:
             assert (False), \
             """
