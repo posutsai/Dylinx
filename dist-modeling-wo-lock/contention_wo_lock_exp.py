@@ -83,11 +83,14 @@ def uncontent_real_prob(counts):
     uc = counts[1] + uc if 1 in counts.keys() else uc
     return uc / sum(counts.values())
 
-def gen_dataset(n_cpu, hc_prob, op_length, executable_path):
-    perm = [i for i in range(N_CPU_CORE)]
-    np.random.shuffle(perm)
-    cpus = perm[:int(n_cpu)]
-    cpu_arg = ','.join(map(str, cpus))
+def gen_dataset(n_cpu, hc_prob, op_length, executable_path, is_fix_cpu=False, cpus=None):
+    if is_fix_cpu:
+        cpu_arg = ','.join(map(str, cpus))
+    else:
+        perm = [i for i in range(N_CPU_CORE)]
+        np.random.shuffle(perm)
+        cpus = perm[:int(n_cpu)]
+        cpu_arg = ','.join(map(str, cpus))
     with subprocess.Popen(args=["taskset", "-c", f"{cpu_arg}", f"./{executable_path}", str(hc_prob), str(op_length), str(n_cpu)], stdout=subprocess.PIPE) as proc:
         return proc.stdout.read().decode('utf-8').split('\n')[0]
 
@@ -126,25 +129,28 @@ def cores_vs_lambda(op_length, start, end, step):
     results = {}
     hc_from = 0.05
     hc_to = 1.
-    hc_step = 0.05
+    hc_step = 0.1
     for c in tqdm(np.arange(start, end, step)):
         ldas = []
+        perm = [i for i in range(N_CPU_CORE)]
+        np.random.shuffle(perm)
+        cpus = perm[:int(c)]
         for hc_prob in np.arange(hc_from, hc_to, hc_step):
-            record_path = gen_dataset(c, hc_prob, op_length, C_EXECUTABLE)
+            record_path = gen_dataset(c, hc_prob, op_length, C_EXECUTABLE, is_fix_cpu=True, cpus=cpus)
             counts = post_analysis(record_path)
             lda = get_poisson_lambda(counts)
             # print(counts)
-            # print("lambda: {:.2f}, hc_prob: {:.2f}, cores: {}".format(lda, hc_prob, c))
-            ldas.append(get_poisson_lambda(counts))
+            print("lambda: {:.2f}, hc_prob: {:.2f}, cores: {}".format(lda, hc_prob, c))
+            ldas.append(get_poisson_lambda(counts) / c)
         results[c] = ldas
     fig, ax = plt.subplots()
-    plt.title("core number vs lambda")
-    plt.ylabel("lambda")
+    plt.title("core ratio vs hash collision prob for different cores")
+    plt.ylabel("lambda / cores")
     plt.xlabel("hash collision prob")
     for c in results.keys():
         l = ax.plot(np.arange(hc_from, hc_to, hc_step), results[c], label="c={}".format(int(c)))
     ax.legend()
-    plt.savefig("cores_vs_lambda.png")
+    plt.savefig("cores_ratio_vs_lambda.png")
 
 def process_arg():
     parser = ArgumentParser()
