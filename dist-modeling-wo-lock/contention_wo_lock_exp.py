@@ -12,7 +12,7 @@ import re
 import multiprocessing
 from tqdm import tqdm
 
-BIN_LENGTH = 5 # ms
+BIN_LENGTH = 1 # ms
 N_CPU_CORE = 40
 C_EXECUTABLE = "a.out"
 
@@ -35,6 +35,7 @@ def post_analysis(record_path):
     # certain keys.
     start_time = min([ v[0]['entry'] for v in intervals.values()])
     end_time = max([ v[-1]['exit'] for v in intervals.values()])
+    print(f"start {start_time}, end {end_time}")
     cnt = 0
     pivots = {k: 0 for k in intervals.keys()}
     hist = []
@@ -65,6 +66,7 @@ def post_analysis(record_path):
         hist.append(cnt)
     unique, count = np.unique(hist, return_counts=True)
     counts = dict(zip(unique, count))
+    print(counts)
     return counts
 
 def get_poisson_lambda(counts):
@@ -76,7 +78,10 @@ def get_poisson_lambda(counts):
 
 
 def uncontent_real_prob(counts):
-    return (counts[0] + counts[1]) / sum(counts.values())
+    uc = 0
+    uc = counts[0] + uc if 0 in counts.keys() else uc
+    uc = counts[1] + uc if 1 in counts.keys() else uc
+    return uc / sum(counts.values())
 
 def gen_dataset(n_cpu, hc_prob, op_length, executable_path):
     perm = [i for i in range(N_CPU_CORE)]
@@ -91,11 +96,12 @@ def poisson_vs_binomial(n_cpu, n_barrow, op_len, start, end, step):
     poisson = []
     binom = []
     real_prob = []
+    # for i in tqdm(np.arange(start, end, step)):
     for i in np.arange(start, end, step):
-        record_path = gen_dataset(3, i, op_len, C_EXECUTABLE)
+        record_path = gen_dataset(n_cpu, i, op_len, C_EXECUTABLE)
         counts = post_analysis(record_path)
         lda = get_poisson_lambda(counts)
-        # print("rc_rate: {:.2f} lambda: {:.2f} uncontention_prob: {:.2f}".format(i, lda, stats.poisson.pmf(0, lda) + stats.poisson.pmf(1, lda)))
+        print("rc_rate: {:.2f} lambda: {:.2f} uncontention_prob: {:.2f} normalized {:.2f}".format(i, lda, stats.poisson.pmf(0, lda) + stats.poisson.pmf(1, lda), lda / n_cpu))
         hash_prob.append(i)
         poisson.append(stats.poisson.pmf(0, lda) + stats.poisson.pmf(1, lda))
         binom.append(stats.binom.pmf(0, 5, i) + stats.binom.pmf(1, 4, i))
@@ -158,7 +164,7 @@ def process_arg():
     parser.add_argument("-l", "--op_len", dest="op_len", type=int, default=2**20,
                         help="The amount of loop iteration in workload of each thread.")
     parser.add_argument("-bcr", "--buck_core_ratio", dest="bc_ratio", type=float, default=-1.,
-                        help="The ratio between bucket and core number.")
+                        help="The ratio between bucket and core number. The arguement affects the resolution of collision prob.")
     args = parser.parse_args()
 
     total_core=multiprocessing.cpu_count()

@@ -52,14 +52,14 @@ void *hash(void *args) {
 	iter = n_thread < (N_JOBS % cores)? iter + 1: iter;
 	for (int n = 0; n < iter; n++) {
 		struct timespec start_ts, end_ts;
-		clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &start_ts);
+		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_ts);
 		int32_t v, t;
 		int32_t bin = rand() % N_BARROW;
 		// Issues may happen here, since the core operations is too short.
 		v = g_barrows[bin];
 		for (int i = 0; i < g_op_length; i++)
 			t++;
-		clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &end_ts);
+		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_ts);
 		g_records[n * cores + n_thread] = (op_record_t) {
 			.entry = start_ts.tv_sec + start_ts.tv_nsec * 1. / TEN_POW_9,
 			.exit = end_ts.tv_sec + end_ts.tv_nsec * 1. / TEN_POW_9,
