@@ -7,11 +7,11 @@
 #include <time.h>
 #include <sys/mman.h>
 #include <sys/sysinfo.h>
+#include <assert.h>
 #include "reader_writer.h"
+#include "utils.h"
 
 #define N_THREAD 16384
-
-op_record_t g_records[N_THREAD];
 
 int32_t mem_lock(void *addr, size_t size) {
 	unsigned long page_size, page_offset;
@@ -35,27 +35,34 @@ int32_t mem_unlock(void *addr, size_t size) {
 // constantly and try to eliminate the side effect of memory swapping. NUMA
 // factor is not considered yet.
 int main(int argc, char *argv[]) {
-	if (argc != 4) {
+	if (argc != 5) {
 		perror("The program requires three arguments as hash collision prob, operation length and bucket core ratio.\n");
 		exit(-1);
 	}
 	float rc_rate = atof(argv[1]);
-	g_op_length = atoi(argv[2]);
-	int32_t cores = atoi(argv[3]);
-	char *lock_type = argv[4];
+	int32_t cores = atoi(argv[2]);
+	int32_t lock_type = atoi(argv[3]);
+	float wr_ratio = atof(argv[4]);
 	char output_filename[200];
-	if (!strcmp(lock_type, "mutex") {
-		sprintf(output_filename, "records/%s/%.3f_%d_%d_v%d.tsv", "mutex", rc_rate, g_op_length, cores, 0);
-		for (uint32_t v = 0; access( output_filename, F_OK ) != -1; v++)
-			sprintf(output_filename, "records/%s/%.3f_%d_%d_v%d.tsv", "mutex", rc_rate, g_op_length, cores, v);
-
-	} else if (!strcmp(lock_type, "rwlock")) {
-
-	} else if (!strcmp(lock_type, "seqlock")) {
-	} else if (!strcmp(lock_type, "rcu")) {
-	} else {
-		perror("Input synchronization primitives doesn't match any of available options.");
-		exit(-1);
+	void *locks;
+	switch(lock_type) {
+		case mutex:
+			gen_record_path("mutex", output_filename, rc_rate, cores);
+			break;
+		case rwlock:
+			gen_record_path("rwlock", output_filename, rc_rate, cores);
+			locks = (void *)rwlock_init();
+			break;
+		case seqlock:
+			gen_record_path("seqlock", output_filename, rc_rate, cores);
+			break;
+		case rcu:
+			gen_record_path("rcu", output_filename, rc_rate, cores);
+			break;
+		default:
+			perror("Input synchronization primitives doesn't match any of available options.");
+			exit(-1);
+			break;
 	}
 	printf("%s\n", output_filename);
 	g_barrows = (int32_t *)malloc(N_BARROW * sizeof(int32_t));
@@ -75,9 +82,10 @@ int main(int argc, char *argv[]) {
 		perror("Error happens while locking memory in mem_lock function.\n");
 	pthread_t tids[N_THREAD];
 	for (int i = 0; i < N_THREAD; i++) {
-		int32_t *n = malloc(sizeof(int));
-		*n = i;
-		pthread_create(tids + i, NULL, hash, (void *)n);
+		task_args_t *args = malloc(sizeof(task_args_t));
+		args -> n = i;
+		args -> locks = locks;
+		pthread_create(tids + i, NULL, task_dispatch(lock_type, wr_ratio), (void *)args);
 	}
 	for (int i = 0; i < N_THREAD; i++)
 		pthread_join(tids[i], NULL);

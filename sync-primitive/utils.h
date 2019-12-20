@@ -26,3 +26,10 @@ void comb(int m, int n, unsigned char *c) {
 				for (c[i]++; i; i--) c[i-1] = c[i] + 1;
 		}
 }
+
+void gen_record_path(char *lock_type, char *output_filename, float rc_rate, int32_t cores) {
+	sprintf(output_filename, "records/%s/%.3f_%d_v%d.tsv", lock_type, rc_rate, cores, 0);
+	for (uint32_t v = 0; access( output_filename, F_OK ) != -1; v++)
+		sprintf(output_filename, "records/%s/%.3f_%d_v%d.tsv", lock_type, rc_rate, cores, v);
+}
+
