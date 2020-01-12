@@ -13,7 +13,7 @@ import multiprocessing
 from tqdm import tqdm
 
 BIN_LENGTH = 1 # ms
-N_CPU_CORE = 40
+N_CPU_CORE = 70
 C_EXECUTABLE = "a.out"
 
 def bhattacharyya(a, b):
@@ -35,7 +35,7 @@ def post_analysis(record_path):
     # certain keys.
     start_time = min([ v[0]['entry'] for v in intervals.values()])
     end_time = max([ v[-1]['exit'] for v in intervals.values()])
-    print(f"start {start_time}, end {end_time}")
+    print("start {}, end {}".format(start_time, end_time))
     cnt = 0
     pivots = {k: 0 for k in intervals.keys()}
     hist = []
@@ -91,7 +91,7 @@ def gen_dataset(n_cpu, hc_prob, op_length, executable_path, is_fix_cpu=False, cp
         np.random.shuffle(perm)
         cpus = perm[:int(n_cpu)]
         cpu_arg = ','.join(map(str, cpus))
-    with subprocess.Popen(args=["taskset", "-c", f"{cpu_arg}", f"./{executable_path}", str(hc_prob), str(op_length), str(n_cpu)], stdout=subprocess.PIPE) as proc:
+    with subprocess.Popen(args=["taskset", "-c", cpu_arg, "./{}".format(executable_path), str(hc_prob), str(op_length), str(n_cpu)], stdout=subprocess.PIPE) as proc:
         return proc.stdout.read().decode('utf-8').split('\n')[0]
 
 def poisson_vs_binomial(n_cpu, n_barrow, op_len, start, end, step):
@@ -100,8 +100,13 @@ def poisson_vs_binomial(n_cpu, n_barrow, op_len, start, end, step):
     binom = []
     real_prob = []
     # for i in tqdm(np.arange(start, end, step)):
+    print("using {} cpus".format(n_cpu))
+    if n_cpu < N_CPU_CORE:
+        perm = [i for i in range(N_CPU_CORE)]
+        np.random.shuffle(perm)
+        cpus = perm[:int(n_cpu)]
     for i in np.arange(start, end, step):
-        record_path = gen_dataset(n_cpu, i, op_len, C_EXECUTABLE)
+        record_path = gen_dataset(n_cpu, i, op_len, C_EXECUTABLE, is_fix_cpu=True, cpus=cpus)
         counts = post_analysis(record_path)
         lda = get_poisson_lambda(counts)
         print("rc_rate: {:.2f} lambda: {:.2f} uncontention_prob: {:.2f} normalized {:.2f}".format(i, lda, stats.poisson.pmf(0, lda) + stats.poisson.pmf(1, lda), lda / n_cpu))
@@ -167,7 +172,7 @@ def process_arg():
                         help="Specify how many processors you would like to use.")
     parser.add_argument("-hcp", "--hash_col_prob", dest="hc_prob", type=float, default=0.4,
                         help="The probability that two thread may collide to each other.")
-    parser.add_argument("-l", "--op_len", dest="op_len", type=int, default=2**20,
+    parser.add_argument("-l", "--op_len", dest="op_len", type=int, default=2**23,
                         help="The amount of loop iteration in workload of each thread.")
     parser.add_argument("-bcr", "--buck_core_ratio", dest="bc_ratio", type=float, default=-1.,
                         help="The ratio between bucket and core number. The arguement affects the resolution of collision prob.")
@@ -186,20 +191,20 @@ def process_arg():
             assert (int(args.bc_ratio * args.core) > 0), "Either bc_ratio or core is illegal."
             pat = re.compile("[-+]?([0-9]*\.[0-9]+|[0-9]+)~[-+]?([0-9]*\.[0-9]+|[0-9]+),[-+]?([0-9]*\.[0-9]+|[0-9]+)")
             m = pat.match(args.range)
-            assert (m and len(m.groups()) == 3), f"The input string is not compatable to the pattern: {args.range}"
+            assert (m and len(m.groups()) == 3), "The input string is not compatable to the pattern: {}".format(args.range)
             start, end, step = map(lambda g: float(g), m.groups())
             assert (start <= 1. and end <= 1. and step <= 1.), \
-            f"""
-            One or even more extracted arguments within start={start}, end={end} and step={end} are illegal.
             """
-            print(f"Start ploting uncontention rate - hash collision ratio graph ...")
-            print(f"The collision rate will start from {start} and end to {end} with step {step}")
+            One or even more extracted arguments within start={}, end={} and step={} are illegal.
+            """.format(start, end, step)
+            print("Start ploting uncontention rate - hash collision ratio graph ...")
+            print("The collision rate will start from {} and end to {} with step {}".format(start, end, step))
             poisson_vs_binomial(args.core, int(args.bc_ratio * args.core), args.op_len, start, end, step)
         elif args.var_mode == "CoreBuckRatio2Lda":
             pat = re.compile("[-+]?([0-9]*\.[0-9]+|[0-9]+)~[-+]?([0-9]*\.[0-9]+|[0-9]+),[-+]?([0-9]*\.[0-9]+|[0-9]+)")
             m = pat.match(args.range)
             start, end, step = map(lambda g: float(g), m.groups())
-            assert(start <= total_core), f"The number of processors should not greater than {total_core}"
+            assert(start <= total_core), "The number of processors should not greater than {}".format(total_core)
             assert(start < end), "Arguments error"
             cores_vs_lambda(args.op_len, start, end, step)
         else:

@@ -56,6 +56,8 @@ void *hash(void *args) {
 		int32_t v, t;
 		int32_t bin = rand() % N_BARROW;
 		// Issues may happen here, since the core operations is too short.
+		// The loading of each task may make whole experiment not progmatic
+		// enough. Maybe seek for more real usecase in the future.
 		v = g_barrows[bin];
 		for (int i = 0; i < g_op_length; i++)
 			t++;
