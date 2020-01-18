@@ -2,19 +2,20 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <assert.h>
 
 #ifndef WRITER_DURATION
-#define WRITER_DURATION 1 << 15
+#define WRITER_DURATION (((uint64_t)1) << 18)
 #endif
 
 #ifndef READER_DURATION
-#define READER_DURATION 1 << 15
+#define READER_DURATION (((uint64_t)1) << 18)
 #endif
 
-#define TASK_DURATION 1 << 15
+#define TASK_DURATION (((uint64_t)1) << 18)
 
 #define N_BARROW 1024
-#define N_JOBS 1048576
+#define N_JOBS (((uint64_t)1) << 15)
 
 #define TEN_POW_9 1000000000
 
@@ -43,8 +44,8 @@ typedef struct task_args {
 } task_args_t;
 
 typedef struct op_record {
-	float entry;
-	float exit;
+	uint64_t entry;
+	uint64_t exit;
 	int32_t bin;
 } op_record_t;
 
@@ -70,20 +71,23 @@ void *mutex_task(void *args) {
 	iter = i_core < (N_JOBS % cores)? iter + 1: iter;
 	for (int n = 0; n < iter; n++) {
 		struct timespec start_ts, end_ts;
-		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_ts);
-		int32_t v, t;
-		int32_t bin = rand() % N_BARROW;
+		assert(clock_gettime(CLOCK_MONOTONIC, &start_ts) == 0);
+		static __thread int32_t v, t, bin;
+		bin = rand() % N_BARROW;
 		v = g_barrows[bin];
 		if (!v) {
 			pthread_mutex_lock(lock);
 			for (int i = 0; i < TASK_DURATION; i++)
 				t++;
 			pthread_mutex_unlock(lock);
+		} else {
+			for (int i = 0; i < TASK_DURATION; i++)
+				t++;
 		}
-		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_ts);
+		clock_gettime(CLOCK_MONOTONIC, &end_ts);
 		g_records[n * cores + i_core] = (op_record_t) {
-			.entry = start_ts.tv_sec + start_ts.tv_nsec * 1. / TEN_POW_9,
-			.exit = end_ts.tv_sec + end_ts.tv_nsec * 1. / TEN_POW_9,
+			.entry = start_ts.tv_sec * TEN_POW_9 + start_ts.tv_nsec,
+			.exit = end_ts.tv_sec * TEN_POW_9 + end_ts.tv_nsec,
 			.bin = v
 		};
 	}
@@ -99,16 +103,16 @@ void *none_task(void *args) {
 	iter = i_core < (N_JOBS % cores)? iter + 1: iter;
 	for (int n = 0; n < iter; n++) {
 		struct timespec start_ts, end_ts;
-		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_ts);
-		int32_t v, t;
-		int32_t bin = rand() % N_BARROW;
+		clock_gettime(CLOCK_REALTIME, &start_ts);
+		static __thread int32_t v, t, bin;
+		bin = rand() % N_BARROW;
 		v = g_barrows[bin];
 		for (int i = 0; i < TASK_DURATION; i++)
 			t++;
-		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_ts);
+		clock_gettime(CLOCK_REALTIME, &end_ts);
 		g_records[n * cores + i_core] = (op_record_t) {
-			.entry = start_ts.tv_sec + start_ts.tv_nsec * 1. / TEN_POW_9,
-			.exit = end_ts.tv_sec + end_ts.tv_nsec * 1. / TEN_POW_9,
+			.entry = start_ts.tv_sec * TEN_POW_9 + start_ts.tv_nsec, 
+			.exit = end_ts.tv_sec * TEN_POW_9 + end_ts.tv_nsec,
 			.bin = v
 		};
 	}
@@ -132,19 +136,22 @@ void *rwlock_reader(void *args) {
 	for (int n = 0; n < iter; n++) {
 		struct timespec start_ts, end_ts;
 		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_ts);
-		int32_t v, t;
-		int32_t bin = rand() % N_BARROW;
+		static __thread int32_t v, t, bin;
+		bin = rand() % N_BARROW;
 		v = g_barrows[bin];
 		if (!v) {
 			pthread_rwlock_rdlock(lock);
-			for (int i = 0; i < TASK_DURATION; i++)
+			for (int i = 0; i < READER_DURATION; i++)
 				t++;
 			pthread_rwlock_unlock(lock);
+		} else {
+			for (int i = 0; i < READER_DURATION; i++)
+				t++
 		}
 		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_ts);
 		g_records[n * cores + i_core] = (op_record_t) {
-			.entry = start_ts.tv_sec + start_ts.tv_nsec * 1. / TEN_POW_9,
-			.exit = end_ts.tv_sec + end_ts.tv_nsec * 1. / TEN_POW_9,
+			.entry = start_ts.tv_sec * TEN_POW_9 + start_ts.tv_nsec,
+			.exit = end_ts.tv_sec * TEN_POW_9 + end_ts.tv_nsec,
 			.bin = v
 		};
 	}
@@ -167,14 +174,14 @@ void *rwlock_writer(void *args) {
 		v = g_barrows[bin];
 		if (!v) {
 			pthread_rwlock_wrlock(lock);
-			for (int i = 0; i < TASK_DURATION; i++)
+			for (int i = 0; i < WRITER_DURATION; i++)
 				t++;
 			pthread_rwlock_unlock(lock);
 		}
 		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_ts);
 		g_records[n * cores + i_core] = (op_record_t) {
-			.entry = start_ts.tv_sec + start_ts.tv_nsec * 1. / TEN_POW_9,
-			.exit = end_ts.tv_sec + end_ts.tv_nsec * 1. / TEN_POW_9,
+			.entry = start_ts.tv_sec * TEN_POW_9 + start_ts.tv_nsec,
+			.exit = end_ts.tv_sec * TEN_POW_9 + end_ts.tv_nsec,
 			.bin = v
 		};
 	}
@@ -193,12 +200,13 @@ void *(*task_dispatch(int32_t lock_type, float wr_ratio))(void *) {
 		case mutex:
 			return mutex_task; 
 		case rwlock:
-			if(rand() < wr_ratio)
+			if (rand() < wr_ratio)
 				return rwlock_writer;
 			return rwlock_reader;
+		case seqlock:
 		default:
 			perror("Currently the lock type is not supported!");
 			return NULL;
-
 	}
 }
+

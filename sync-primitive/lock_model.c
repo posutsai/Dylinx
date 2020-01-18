@@ -55,6 +55,7 @@ int main(int argc, char *argv[]) {
 	switch(lock_type) {
 		case none:
 			gen_record_path("none", output_filename, rc_rate, cores);
+			break;
 		case mutex:
 			gen_record_path("mutex", output_filename, rc_rate, cores);
 			lock = (void *)mutex_init();
@@ -99,10 +100,9 @@ int main(int argc, char *argv[]) {
 	}
 	for (int i = 0; i < cores; i++)
 		pthread_join(tids[i], NULL);
-	return 0;
 	FILE *fp = fopen(output_filename, "w+");
 	for (int i = 0; i < N_THREAD; i++)
-		fprintf(fp, "%f\t%f\t%d\n", g_records[i].entry, g_records[i].exit, g_records[i].bin);
+		fprintf(fp, "%lu\t%lu\t%d\n", g_records[i].entry, g_records[i].exit, g_records[i].bin);
 	fclose(fp);
 	if (mem_unlock((void *)g_barrows, N_BARROW * sizeof(int)) == -1 ||
 		mem_unlock((void *)g_records, N_JOBS * sizeof(op_record_t)) == -1)
