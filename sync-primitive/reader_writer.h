@@ -103,13 +103,13 @@ void *none_task(void *args) {
 	iter = i_core < (N_JOBS % cores)? iter + 1: iter;
 	for (int n = 0; n < iter; n++) {
 		struct timespec start_ts, end_ts;
-		clock_gettime(CLOCK_REALTIME, &start_ts);
+		clock_gettime(CLOCK_MONOTONIC, &start_ts);
 		static __thread int32_t v, t, bin;
 		bin = rand() % N_BARROW;
 		v = g_barrows[bin];
 		for (int i = 0; i < TASK_DURATION; i++)
 			t++;
-		clock_gettime(CLOCK_REALTIME, &end_ts);
+		clock_gettime(CLOCK_MONOTONIC, &end_ts);
 		g_records[n * cores + i_core] = (op_record_t) {
 			.entry = start_ts.tv_sec * TEN_POW_9 + start_ts.tv_nsec, 
 			.exit = end_ts.tv_sec * TEN_POW_9 + end_ts.tv_nsec,
@@ -146,7 +146,7 @@ void *rwlock_reader(void *args) {
 			pthread_rwlock_unlock(lock);
 		} else {
 			for (int i = 0; i < READER_DURATION; i++)
-				t++
+				t++;
 		}
 		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_ts);
 		g_records[n * cores + i_core] = (op_record_t) {
@@ -168,17 +168,20 @@ void *rwlock_writer(void *args) {
 	iter = i_core < (N_JOBS % cores)? iter + 1: iter;
 	for (int n = 0; n < iter; n++) {
 		struct timespec start_ts, end_ts;
-		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_ts);
-		int32_t v, t;
-		int32_t bin = rand() % N_BARROW;
+		clock_gettime(CLOCK_MONOTONIC, &start_ts);
+		static __thread int32_t v, t, bin;
+		bin = rand() % N_BARROW;
 		v = g_barrows[bin];
 		if (!v) {
 			pthread_rwlock_wrlock(lock);
 			for (int i = 0; i < WRITER_DURATION; i++)
 				t++;
 			pthread_rwlock_unlock(lock);
+		} else {
+			for (int i = 0; i < WRITER_DURATION; i++)
+				t++;
 		}
-		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_ts);
+		clock_gettime(CLOCK_MONOTONIC, &end_ts);
 		g_records[n * cores + i_core] = (op_record_t) {
 			.entry = start_ts.tv_sec * TEN_POW_9 + start_ts.tv_nsec,
 			.exit = end_ts.tv_sec * TEN_POW_9 + end_ts.tv_nsec,
@@ -200,7 +203,7 @@ void *(*task_dispatch(int32_t lock_type, float wr_ratio))(void *) {
 		case mutex:
 			return mutex_task; 
 		case rwlock:
-			if (rand() < wr_ratio)
+			if (wr_ratio * 100 > rand() % 100)
 				return rwlock_writer;
 			return rwlock_reader;
 		case seqlock:

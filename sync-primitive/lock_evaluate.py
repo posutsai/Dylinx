@@ -14,7 +14,7 @@ import multiprocessing
 from tqdm import tqdm
 import numpy as np
 
-BIN_LENGTH = 500000000 # ns
+BIN_LENGTH = 300000000 # ns
 N_CPU_CORE = 70
 C_EXECUTABLE = "a.out"
 
@@ -31,7 +31,7 @@ def post_analysis(record_path):
     # certain keys.
     start_time = min([ v[0]['entry'] for v in intervals.values()])
     end_time = max([ v[-1]['exit'] for v in intervals.values()])
-    print("duration {} ns".format(end_time - start_time))
+    # print("duration {} ns".format(end_time - start_time))
     cnt = 0
     pivots = {k: 0 for k in intervals.keys()}
     hist = []
@@ -96,7 +96,7 @@ def uncontent_real_prob(counts):
     uc = counts[1] + uc if 1 in counts.keys() else uc
     return uc / sum(counts.values())
 
-def lock_evaluate(num_core, evaluate_list=[("none"), ("mutex")], repeat_times=10):
+def lock_evaluate(num_core, evaluate_list=["none", "mutex", "rwlock"], repeat_times=10):
     results = {}
     perm = [i for i in range(N_CPU_CORE)]
     np.random.shuffle(perm)
@@ -116,7 +116,7 @@ def lock_evaluate(num_core, evaluate_list=[("none"), ("mutex")], repeat_times=10
                     ldas.append(lda)
                     print(lda)
                 total.append(ldas)
-            mean = np.mean(total, axis=1)
+            mean = np.mean(total, axis=0)
             results["none"] = mean
             print(total)
         if "mutex" == lt:
@@ -135,27 +135,32 @@ def lock_evaluate(num_core, evaluate_list=[("none"), ("mutex")], repeat_times=10
             results["mutex"] = mean
             print(total)
 
-        if "rwlock" == lt[0]:
+        if "rwlock" == lt:
             print("Evaluating rwlock ....")
             wr_ratio_start = 0.
             wr_ratio_end = 1.2
             wr_ratio_step = 0.2
             print("Start writer ratio from {} to {} with step {}".format(wr_ratio_start, wr_ratio_end, wr_ratio_step))
             for wr_ratio in np.arange(wr_ratio_start, wr_ratio_end, wr_ratio_step):
-                ldas = []
-                for hc_prob in np.arange(0., 1.1, 0.1):
-                    record_path = gen_dataset(num_core, hc_prob, C_EXECUTABLE, "rwlock", wr_ratio, is_fix_cpu=True, cpus=cpus)
-                    counts = post_analysis(record_path)
-                    lda = get_poisson_lambda(counts)
-                    ldas.append(lda / num_core)
-                results["rwlock {}".format(wr_ratio)] = ldas
+                total = []
+                for r in range(repeat_times):
+                    ldas = []
+                    for hc_prob in np.arange(0., 1.2, 0.3):
+                        record_path = gen_dataset(num_core, hc_prob, C_EXECUTABLE, "rwlock", wr_ratio, is_fix_cpu=True, cpus=cpus)
+                        counts = post_analysis(record_path)
+                        lda = get_poisson_lambda(counts)
+                        ldas.append(lda)
+                    total.append(ldas)
+                print(total)
+                mean = np.mean(total, axis=0)
+                results["rwlock_{}".format(wr_ratio)] = mean
 
 def process_args():
     parser = ArgumentParser()
     parser.add_argument("-c", "--core", dest="core", type=int, default=multiprocessing.cpu_count(),
                         help="Specify how many processors you would like to use.")
     args = parser.parse_args()
-    lock_evaluate(args.core, repeat_times=1)
+    lock_evaluate(args.core, evaluate_list=["rwlock"], repeat_times=1)
 
 if __name__ == "__main__":
     process_args()
