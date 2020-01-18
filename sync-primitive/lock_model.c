@@ -102,7 +102,10 @@ int main(int argc, char *argv[]) {
 		pthread_join(tids[i], NULL);
 	FILE *fp = fopen(output_filename, "w+");
 	for (int i = 0; i < N_THREAD; i++)
-		fprintf(fp, "%lu\t%lu\t%d\n", g_records[i].entry, g_records[i].exit, g_records[i].bin);
+		fprintf(fp, "%ld\t%ld\t%ld\t%ld\t%d\n",
+				g_records[i].entry_sec, g_records[i].entry_ns,
+				g_records[i].exit_sec, g_records[i].exit_ns,
+				g_records[i].bin);
 	fclose(fp);
 	if (mem_unlock((void *)g_barrows, N_BARROW * sizeof(int)) == -1 ||
 		mem_unlock((void *)g_records, N_JOBS * sizeof(op_record_t)) == -1)

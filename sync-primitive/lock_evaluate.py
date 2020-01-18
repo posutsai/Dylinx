@@ -14,7 +14,7 @@ import multiprocessing
 from tqdm import tqdm
 import numpy as np
 
-BIN_LENGTH = 300000000 # ns
+BIN_LENGTH = 500000 # ns
 N_CPU_CORE = 70
 C_EXECUTABLE = "a.out"
 
@@ -22,9 +22,14 @@ def post_analysis(record_path):
     intervals = {}
     with open(record_path) as df:
         for l in csv.reader(df, delimiter="\t"):
-            if int(l[2]) not in intervals.keys():
-                intervals[int(l[2])] = []
-            intervals[int(l[2])].append({"entry": float(l[0]) * 1000, "exit": float(l[1]) * 1000})
+            # Initialize bin if the bin isn't encountered before.
+            if int(l[-1]) not in intervals.keys():
+                intervals[int(l[-1])] = []
+            intervals[int(l[-1])].append(
+                    {
+                        "entry": float(l[0]) * 10 ** 9 + float(l[1]),
+                        "exit": float(l[2]) * 10 ** 9 + float(l[3]),
+                    })
     intervals = {b: sorted(intervals[b], key=lambda k: k['entry']) for b in intervals.keys()}
     # Note:
     # When the amount of samples is really low, there is possiblity that no thread get into
@@ -110,11 +115,9 @@ def lock_evaluate(num_core, evaluate_list=["none", "mutex", "rwlock"], repeat_ti
                 ldas = []
                 for hc_prob in np.arange(0., 1.1, 0.1):
                     record_path =  gen_dataset(num_core, hc_prob, C_EXECUTABLE, "none", 0., is_fix_cpu=True, cpus=cpus)
-                    print(record_path)
                     counts = post_analysis(record_path)
                     lda = get_poisson_lambda(counts) 
                     ldas.append(lda)
-                    print(lda)
                 total.append(ldas)
             mean = np.mean(total, axis=0)
             results["none"] = mean
@@ -129,7 +132,6 @@ def lock_evaluate(num_core, evaluate_list=["none", "mutex", "rwlock"], repeat_ti
                     counts = post_analysis(record_path)
                     lda = get_poisson_lambda(counts)
                     ldas.append(lda)
-                    print(lda)
                 total.append(ldas)
             mean = np.mean(total, axis=0)
             results["mutex"] = mean
@@ -160,7 +162,7 @@ def process_args():
     parser.add_argument("-c", "--core", dest="core", type=int, default=multiprocessing.cpu_count(),
                         help="Specify how many processors you would like to use.")
     args = parser.parse_args()
-    lock_evaluate(args.core, evaluate_list=["rwlock"], repeat_times=1)
+    lock_evaluate(args.core, evaluate_list=["none", "mutex", "rwlock"], repeat_times=1)
 
 if __name__ == "__main__":
     process_args()
