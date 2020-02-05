@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 import sys
 import csv
@@ -13,8 +12,9 @@ import re
 import multiprocessing
 from tqdm import tqdm
 import numpy as np
+import pickle
 
-BIN_LENGTH = 500000 # ns
+BIN_LENGTH = 450000 # ns
 N_CPU_CORE = 70
 C_EXECUTABLE = "a.out"
 
@@ -119,9 +119,9 @@ def lock_evaluate(num_core, evaluate_list=["none", "mutex", "rwlock"], repeat_ti
                     lda = get_poisson_lambda(counts) 
                     ldas.append(lda)
                 total.append(ldas)
+            print(total)
             mean = np.mean(total, axis=0)
             results["none"] = mean
-            print(total)
         if "mutex" == lt:
             print("Evaluating mutex ....")
             total = []
@@ -133,9 +133,9 @@ def lock_evaluate(num_core, evaluate_list=["none", "mutex", "rwlock"], repeat_ti
                     lda = get_poisson_lambda(counts)
                     ldas.append(lda)
                 total.append(ldas)
+            print(total)
             mean = np.mean(total, axis=0)
             results["mutex"] = mean
-            print(total)
 
         if "rwlock" == lt:
             print("Evaluating rwlock ....")
@@ -147,22 +147,38 @@ def lock_evaluate(num_core, evaluate_list=["none", "mutex", "rwlock"], repeat_ti
                 total = []
                 for r in range(repeat_times):
                     ldas = []
-                    for hc_prob in np.arange(0., 1.2, 0.3):
+                    for hc_prob in np.arange(0., 1.1, 0.1):
                         record_path = gen_dataset(num_core, hc_prob, C_EXECUTABLE, "rwlock", wr_ratio, is_fix_cpu=True, cpus=cpus)
                         counts = post_analysis(record_path)
                         lda = get_poisson_lambda(counts)
                         ldas.append(lda)
                     total.append(ldas)
-                print(total)
                 mean = np.mean(total, axis=0)
-                results["rwlock_{}".format(wr_ratio)] = mean
+                results["rwlock_{:2.2f}".format(wr_ratio)] = mean
+    with open("result.pkle", 'wb') as f:
+        pickle.dump(results, f)
+    return results
+
+def plot_evaluation(result, cores):
+    fig, ax = plt.subplots()
+    plt.title("Synchronization Primitive Evaluation")
+    plt.ylabel("lambda, equivalent thread number")
+    plt.xlabel("race condition rate")
+    rc_rate = list([rc for rc in np.arange(0., 1.1, 0.1)])
+    theo_proc = list([rc * cores for rc in np.arange(0., 1.1, 0.1)])
+    ax.plot(rc_rate, theo_proc, label="theoretical core")
+    for k in result.keys():
+        l, = ax.plot(rc_rate, result[k], label=k)
+    ax.legend()
+    plt.savefig("sync_primitive_eva.png")
 
 def process_args():
     parser = ArgumentParser()
     parser.add_argument("-c", "--core", dest="core", type=int, default=multiprocessing.cpu_count(),
                         help="Specify how many processors you would like to use.")
     args = parser.parse_args()
-    lock_evaluate(args.core, evaluate_list=["none", "mutex", "rwlock"], repeat_times=1)
+    result = lock_evaluate(args.core, evaluate_list=["none", "mutex", "rwlock"], repeat_times=20)
+    plot_evaluation(result, args.core)
 
 if __name__ == "__main__":
     process_args()
