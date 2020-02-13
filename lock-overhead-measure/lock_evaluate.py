@@ -9,6 +9,7 @@ import random
 import matplotlib.pyplot as plt
 from argparse import ArgumentParser
 import re
+from multiprocessing import Pool
 import multiprocessing
 from tqdm import tqdm
 import numpy as np
@@ -16,9 +17,32 @@ import pickle
 
 N_CPU_CORE = 70
 C_EXECUTABLE = "a.out"
+def parallel_task(args):
+    part = args["part"]
+    holding = args["holding"]
+    acquiring = args["acquiring"]
+    amount = args["amount"]
+    result = {
+        "occurrence": [],
+        "contention_time": [],
+        "execution_time": [],
+    }
+    for h in part:
+        if h == amount -1:
+            continue
+        cnt = 0
+        for r in acquiring:
+            if r["acquiring_ts"] < holding[h]["holding_ts"] and r["holding_ts"] > holding[h]["releasing_ts"]:
+                cnt += 1
+            if r["acquiring_ts"] > holding[h]["releasing_ts"]:
+                break
+        result["occurrence"].append(cnt)
+        result["contention_time"].append(holding[h + 1]["holding_ts"] - holding[h]["releasing_ts"])
+    return result
 
 # Since we have to make the lock tested as much as possible, there is no need to set bin.
 def post_analysis(record_path):
+
     records = []
     with open(record_path) as df:
         for l in csv.reader(df, delimiter='\t'):
@@ -27,34 +51,32 @@ def post_analysis(record_path):
                 "holding_ts": float(l[1]),
                 "releasing_ts": float(l[2]),
             })
-    records = sorted(records, key=lambda k: k['holding_ts'])
+    holding_sorted = sorted(records, key=lambda k: k["holding_ts"])
+    acquiring_sorted = sorted(records, key=lambda k: k["acquiring_ts"])
+    divide_len = len(records) // multiprocessing.cpu_count()
+    args = []
+    for i in range(multiprocessing.cpu_count()):
+        args.append({
+            "part": list(range(len(records)))[i * divide_len: (i + 1) * divide_len],
+            "holding": holding_sorted,
+            "acquiring": acquiring_sorted,
+            "amount": len(records)
+        })
 
+    with Pool(multiprocessing.cpu_count()) as p:
+        res = p.map(parallel_task, args)
+    return res
     execution_time = []
-    total = {c: {"occurrence":0, "contention_time": []} for c in range(N_CPU_CORE)}
-    # Calculate for each holding moment
-    for i, h in enumerate(records):
-        execution_time.append(h["releasing_ts"] - h["holding_ts"])
-        cnt = 0
-        # Count number of threads that are contending for the same lock
-        for r in records:
-            if r["acquiring_ts"] < h["holding_ts"] and r["holding_ts"] > h["releasing_ts"]:
-                cnt += 1
-        if i > 0 and cnt > 0:
-            print(h)
-            print(records[i-1])
-            print(i, cnt)
-            print(h["holding_ts"] - records[i - 1]["releasing_ts"])
-            assert(h["holding_ts"] > records[i - 1]["releasing_ts"])
-        total[cnt]["occurrence"] += 1
+
     print("execution time : mean {}ns, std {}ns".format(
         np.mean(execution_time),
         np.std(execution_time))
     )
-    for i in range(4):
+    for i in range(10):
         print("occurrence {} overhead mean {} ns std {} ns".format(
-            total[i]["occurrence"],
-            np.mean(total[i]["contention_time"]),
-            np.std(total[i]["contention_time"])
+            len(total[i]),
+            np.mean(total[i]),
+            np.std(total[i])
         ))
 
 def get_poisson_lambda(counts):
@@ -64,13 +86,10 @@ def get_poisson_lambda(counts):
     lda = w_times / sum(counts.values())
     return lda
 
-def gen_dataset(n_cpu, hc_prob, executable_path, lock_type, wr_ratio, is_fix_cpu=False, cpus=None):
+def gen_dataset(n_cpu, hc_prob, executable_path, lock_type, is_fix_cpu=False, cpus=None):
     lookup_table = {
-        "none": 0,
-        "mutex": 1,
-        "rwlock": 2,
-        "seqlock": 3,
-        "rcu": 4,
+        "mutex_TAS": 0,
+        "mutex_TTAS": 1,
     }
     if is_fix_cpu:
         cpu_arg = ','.join(map(str, cpus))
@@ -80,7 +99,7 @@ def gen_dataset(n_cpu, hc_prob, executable_path, lock_type, wr_ratio, is_fix_cpu
         cpus = perm[:int(n_cpu)]
         cpu_arg = ','.join(map(str, cpus))
     # print("taskset -c {} ./{}".format(cpu_arg, executable_path), str(hc_prob), str(n_cpu), str(lookup_table[lock_type]), str(wr_ratio))
-    with subprocess.Popen(args=["taskset", "-c", cpu_arg, "./{}".format(executable_path), str(hc_prob), str(n_cpu), str(lookup_table[lock_type]), str(wr_ratio)], stdout=subprocess.PIPE) as proc:
+    with subprocess.Popen(args=["taskset", "-c", cpu_arg, "./{}".format(executable_path), str(hc_prob), str(n_cpu), str(lookup_table[lock_type])], stdout=subprocess.PIPE) as proc:
         return proc.stdout.read().decode('utf-8').split('\n')[0]
 
 def uncontent_real_prob(counts):
@@ -169,4 +188,6 @@ def process_args():
     plot_evaluation(result, args.core)
 
 if __name__ == "__main__":
-    post_analysis("records/mutex_TAS/0.500_5_v3.tsv")
+    # record_path = gen_dataset(64, 0.5, "a.out", "mutex_TAS")
+    # print("complete generating dataset.... in {}".format(record_path))
+    post_analysis("records/mutex_TAS/0.500_10_v2.tsv")
