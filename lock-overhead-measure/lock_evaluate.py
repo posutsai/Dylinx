@@ -38,10 +38,11 @@ def parallel_task(args):
                 break
         result["occurrence"].append(cnt)
         result["contention_time"].append(holding[h + 1]["holding_ts"] - holding[h]["releasing_ts"])
+        result["execution_time"].append(holding[h]["releasing_ts"] - holding[h]["holding_ts"])
     return result
 
 # Since we have to make the lock tested as much as possible, there is no need to set bin.
-def post_analysis(record_path):
+def post_analysis(record_path, cores):
 
     records = []
     with open(record_path) as df:
@@ -55,7 +56,8 @@ def post_analysis(record_path):
     acquiring_sorted = sorted(records, key=lambda k: k["acquiring_ts"])
     divide_len = len(records) // multiprocessing.cpu_count()
     args = []
-    for i in range(multiprocessing.cpu_count()):
+    dispatch_cores = multiprocessing.cpu_count() // 2
+    for i in range(dispatch_cores):
         args.append({
             "part": list(range(len(records)))[i * divide_len: (i + 1) * divide_len],
             "holding": holding_sorted,
@@ -63,20 +65,28 @@ def post_analysis(record_path):
             "amount": len(records)
         })
 
-    with Pool(multiprocessing.cpu_count()) as p:
-        res = p.map(parallel_task, args)
-    return res
-    execution_time = []
+    static = {
+        "contention": {i: {"occurrence": 0, "duration": []}for i in range(cores)},
+        "execution": []
+    }
+    with Pool(dispatch_cores) as p:
+        mapping_res = p.map(parallel_task, args)
+
+    for m in mapping_res:
+        static["execution"] = np.concatenate([static["execution"], m["execution_time"]])
+        for i, c in enumerate(m["occurrence"]):
+            static["contention"][c]["occurrence"] += 1
+            static["contention"][c]["duration"].append(m["contention_time"][i])
 
     print("execution time : mean {}ns, std {}ns".format(
-        np.mean(execution_time),
-        np.std(execution_time))
+        np.mean(static["execution"]),
+        np.std(static["execution"]))
     )
-    for i in range(10):
-        print("occurrence {} overhead mean {} ns std {} ns".format(
-            len(total[i]),
-            np.mean(total[i]),
-            np.std(total[i])
+    for i in range(cores):
+        print("{} thread contending event: occurrence {} overhead mean {} ns ".format(
+            i,
+            static["contention"][i]["occurrence"],
+            stats.trim_mean(static["contention"][i]["duration"], 0.01),
         ))
 
 def get_poisson_lambda(counts):
@@ -99,7 +109,7 @@ def gen_dataset(n_cpu, hc_prob, executable_path, lock_type, is_fix_cpu=False, cp
         cpus = perm[:int(n_cpu)]
         cpu_arg = ','.join(map(str, cpus))
     # print("taskset -c {} ./{}".format(cpu_arg, executable_path), str(hc_prob), str(n_cpu), str(lookup_table[lock_type]), str(wr_ratio))
-    with subprocess.Popen(args=["taskset", "-c", cpu_arg, "./{}".format(executable_path), str(hc_prob), str(n_cpu), str(lookup_table[lock_type])], stdout=subprocess.PIPE) as proc:
+    with subprocess.Popen(args=["sudo", "nice", "--15", "taskset", "-c", cpu_arg, "./{}".format(executable_path), str(hc_prob), str(n_cpu), str(lookup_table[lock_type])], stdout=subprocess.PIPE) as proc:
         return proc.stdout.read().decode('utf-8').split('\n')[0]
 
 def uncontent_real_prob(counts):
@@ -188,6 +198,6 @@ def process_args():
     plot_evaluation(result, args.core)
 
 if __name__ == "__main__":
-    # record_path = gen_dataset(64, 0.5, "a.out", "mutex_TAS")
+    record_path = gen_dataset(32, 0.5, "a.out", "mutex_TAS")
     # print("complete generating dataset.... in {}".format(record_path))
-    post_analysis("records/mutex_TAS/0.500_10_v2.tsv")
+    post_analysis(record_path, 32)
