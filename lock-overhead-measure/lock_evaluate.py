@@ -20,21 +20,25 @@ C_EXECUTABLE = "a.out"
 def parallel_task(args):
     part = args["part"]
     holding = args["holding"]
-    acquiring = args["acquiring"]
+    releasing = args["releasing"]
     amount = args["amount"]
+    cores = args['cores']
     result = {
         "occurrence": [],
         "contention_time": [],
         "execution_time": [],
     }
+    check_start = 0
     for h in part:
         if h == amount -1:
             continue
         cnt = 0
-        for r in acquiring:
+        for i, r in enumerate(releasing[check_start:]):
             if r["acquiring_ts"] < holding[h]["holding_ts"] and r["holding_ts"] > holding[h]["releasing_ts"]:
                 cnt += 1
-            if r["acquiring_ts"] > holding[h]["releasing_ts"]:
+            if r["releasing_ts"] < holding[h]["acquiring_ts"]:
+                check_start += 1
+            if cnt == cores:
                 break
         result["occurrence"].append(cnt)
         result["contention_time"].append(holding[h + 1]["holding_ts"] - holding[h]["releasing_ts"])
@@ -53,7 +57,7 @@ def post_analysis(record_path, cores):
                 "releasing_ts": float(l[2]),
             })
     holding_sorted = sorted(records, key=lambda k: k["holding_ts"])
-    acquiring_sorted = sorted(records, key=lambda k: k["acquiring_ts"])
+    releasing_sorted = sorted(records, key=lambda k: k["releasing_ts"])
     divide_len = len(records) // multiprocessing.cpu_count()
     args = []
     dispatch_cores = multiprocessing.cpu_count() // 2
@@ -61,8 +65,9 @@ def post_analysis(record_path, cores):
         args.append({
             "part": list(range(len(records)))[i * divide_len: (i + 1) * divide_len],
             "holding": holding_sorted,
-            "acquiring": acquiring_sorted,
-            "amount": len(records)
+            "releasing": releasing_sorted,
+            "amount": len(records),
+            "cores": cores
         })
 
     static = {
@@ -109,7 +114,7 @@ def gen_dataset(n_cpu, hc_prob, executable_path, lock_type, is_fix_cpu=False, cp
         cpus = perm[:int(n_cpu)]
         cpu_arg = ','.join(map(str, cpus))
     # print("taskset -c {} ./{}".format(cpu_arg, executable_path), str(hc_prob), str(n_cpu), str(lookup_table[lock_type]), str(wr_ratio))
-    with subprocess.Popen(args=["sudo", "nice", "--15", "taskset", "-c", cpu_arg, "./{}".format(executable_path), str(hc_prob), str(n_cpu), str(lookup_table[lock_type])], stdout=subprocess.PIPE) as proc:
+    with subprocess.Popen(args=["taskset", "-c", cpu_arg, "./{}".format(executable_path), str(hc_prob), str(n_cpu), str(lookup_table[lock_type])], stdout=subprocess.PIPE) as proc:
         return proc.stdout.read().decode('utf-8').split('\n')[0]
 
 def uncontent_real_prob(counts):
@@ -198,6 +203,6 @@ def process_args():
     plot_evaluation(result, args.core)
 
 if __name__ == "__main__":
-    record_path = gen_dataset(32, 0.5, "a.out", "mutex_TAS")
-    # print("complete generating dataset.... in {}".format(record_path))
-    post_analysis(record_path, 32)
+    record_path = gen_dataset(64, 0.5, "a.out", "mutex_TAS")
+    print("complete generating dataset.... in {}".format(record_path))
+    post_analysis(record_path, 64)

@@ -11,7 +11,7 @@
 #include <unistd.h>
 #include "utils.h"
 
-#define N_JOBS (((uint64_t)1) << 15)
+#define N_JOBS (((uint64_t)1) << 16)
 #define N_BARROW 1024 // This factor won't affect the experiment.
 #define TASK_DURATION (((uint64_t)1) << 20)
 #define TEN_POW_9 1000000000
@@ -67,8 +67,11 @@ pthread_barrier_t barr;
 
 void *pthread_task(void *args) {
 	static __thread int32_t i_core, cores, iter, i, n, t;
-	static __thread struct timespec acquiring_ts, holding_ts, releasing_ts;
-	static __thread pthread_mutex_t *lock;
+	static __thread struct timespec acquiring_ts, holding_ts, releasing_ts, sleeping_ts;
+	/* static __thread struct timespec acquiring_ts, holding_ts, releasing_ts; */
+	pthread_mutex_t *lock;
+	sleeping_ts.tv_sec = 0;
+	sleeping_ts.tv_nsec = 1 << 15; // 2^25
 	lock = (pthread_mutex_t *)(((task_args_t *)args) -> lock);
 	i_core = ((task_args_t *)args) -> n;
 	cores = ((task_args_t *)args) -> cores;
@@ -83,7 +86,7 @@ void *pthread_task(void *args) {
 			t++;
 		pthread_mutex_unlock(lock);
 		clock_gettime(CLOCK_MONOTONIC, &releasing_ts);
-
+		nanosleep(&sleeping_ts, NULL);
 		g_records[n * cores + i_core] = (op_record_t) {
 			.acquiring_ts = acquiring_ts.tv_sec * TEN_POW_9 + acquiring_ts.tv_nsec,
 			.holding_ts = holding_ts.tv_sec * TEN_POW_9 + holding_ts.tv_nsec,
