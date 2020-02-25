@@ -1,0 +1,3 @@
+[submodule "lock-overhead-measure/litl"]
+	path = lock-overhead-measure/litl
+	url = https://github.com/multicore-locks/litl.git
