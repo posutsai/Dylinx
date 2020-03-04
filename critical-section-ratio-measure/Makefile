@@ -1,8 +1,8 @@
-CXX=clang++-9
-CC=clang-9
-OPT=opt-9
-CXX_FLAGS=`llvm-config-9 --cxxflags`
-LD_FLAGS=`llvm-config-9 --ldflags --libs all`
+CXX=clang++-10
+CC=clang-10
+OPT=opt-10
+CXX_FLAGS=`llvm-config-10 --cxxflags`
+LD_FLAGS=`llvm-config-10 --ldflags --libs all`
 OPT_PASS_FLAGS= -pthread-detect
 LOAD_FILES= -load bin/pthreadDetectPass.so
 
@@ -13,9 +13,9 @@ pthreadDetectPass: pthreadDetectPass.cpp
 	$(CXX) -shared -o bin/$@.so bin/$@.o $(LD_FLAGS)
 
 target: target.cpp
-	$(CC) -g -emit-llvm target.cpp -c -o bin/target.bc
+	$(CC) -g -S -emit-llvm target.cpp -o bin/$@.ll
 
 run-pass: pthreadDetectPass target
-	$(OPT) $(LOAD_FILES) $(OPT_PASS_FLAGS) < bin/target.bc > /dev/null
+	$(OPT) $(LOAD_FILES) $(OPT_PASS_FLAGS) < bin/target.ll > /dev/null
 
 

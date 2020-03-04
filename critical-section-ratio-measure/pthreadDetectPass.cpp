@@ -2,6 +2,8 @@
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
@@ -10,14 +12,28 @@
 using namespace llvm;
 
 namespace {
-  bool isDispatchPthread(CallGraphNode *node) {
-    for (const auto &callee: *node) {
-      Function *f = callee.second -> getFunction();
-      if (f && f -> getName().compare("pthread_create") == 0)
-        return true;
+  int32_t isDispatchPthread(CallGraphNode *node) {
+    for (int32_t i = 0; i < node -> size(); i++) {
+      Function *f = (*node)[i] -> getFunction();
+      if (f && f -> getName().compare("pthread_create") == 0) {
+        return i;
+      }
     }
-    return false;
+    return -1;
   }
+
+  void insertTimer(Function *func) {
+    for (auto &inst: instructions(func)) {
+        if (inst.getOpcode() == 56) {
+          CallInst *ci = dyn_cast<CallInst>(&inst);
+          if (ci && ci->getCalledFunction()->getName().compare("pthread_create") == 0) {
+            Function *pthread_task = dyn_cast<Function>(ci->getArgOperand(2));
+            errs() << "pthread is going to execute " << pthread_task->getName() << "function \n";
+          }
+        }
+    }
+  }
+
   struct PthreadScopeDetectPass : public ModulePass {
     static char ID;
     PthreadScopeDetectPass() : ModulePass(ID) {
@@ -30,8 +46,10 @@ namespace {
         auto nodes = *iterSCC;
         for (CallGraphNode *node: nodes) {
           Function *currFunc = node -> getFunction();
-          if (isDispatchPthread(node) && currFunc) {
-            errs() << "The function " << currFunc -> getName() << " will use pthread_create function \n";
+          int32_t target_i = isDispatchPthread(node);
+          if (target_i >= 0 && currFunc) {
+            errs() << "The function " << currFunc -> getName() << " will use pthread_create function at " << target_i << '\n';
+            insertTimer(currFunc);
           }
         }
       }
