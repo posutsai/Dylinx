@@ -4,10 +4,13 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/InstIterator.h"
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "stdint.h"
+#include <string>
 
 using namespace llvm;
 
@@ -24,23 +27,35 @@ namespace {
 
   void insertTimer(Function *func) {
     for (auto &inst: instructions(func)) {
-        if (inst.getOpcode() == 56) {
-          CallInst *ci = dyn_cast<CallInst>(&inst);
-          if (ci && ci->getCalledFunction()->getName().compare("pthread_create") == 0) {
-            Function *pthread_task = dyn_cast<Function>(ci->getArgOperand(2));
-            errs() << "pthread is going to execute " << pthread_task->getName() << "function \n";
-          }
+      if (inst.getOpcode() == 56) {
+        CallInst *ci = dyn_cast<CallInst>(&inst);
+        if (ci && ci->getCalledFunction()->getName().compare("pthread_create") == 0) {
+          Function *pthread_task = dyn_cast<Function>(ci->getArgOperand(2));
+          errs() << "pthread is going to execute " << pthread_task->getName() << "function \n";
         }
+      }
     }
+  }
+  GlobalVariable *createGV(std::string name, Module &M) {
+    // The global variable here would be used to accumulate time
+    // duration including critical and non-critical.
+    GlobalVariable *gVar = new GlobalVariable(
+        M, IntegerType::get(M.getContext(), 32),
+        false,
+        GlobalValue::CommonLinkage,
+        ConstantInt::get(IntegerType::get(M.getContext(), 32), 0),
+        "testGV");
+    gVar->setAlignment(4); // Issue may happen here.
+    return gVar;
   }
 
   struct PthreadScopeDetectPass : public ModulePass {
     static char ID;
-    PthreadScopeDetectPass() : ModulePass(ID) {
-    }
+    PthreadScopeDetectPass() : ModulePass(ID) { }
 
     bool runOnModule(Module &M) override {
       CallGraph &CG = getAnalysis<CallGraphWrapperPass>().getCallGraph();
+      GlobalVariable *gVar = createGV("testGV", M);
       uint32_t nSCC  = 0;
       for (scc_iterator<CallGraph *> iterSCC = scc_begin(&CG); !iterSCC.isAtEnd(); ++iterSCC) {
         auto nodes = *iterSCC;

@@ -13,9 +13,9 @@ pthreadDetectPass: pthreadDetectPass.cpp
 	$(CXX) -shared -o bin/$@.so bin/$@.o $(LD_FLAGS)
 
 target: target.cpp
-	$(CC) -g -S -emit-llvm target.cpp -o bin/$@.ll
+	$(CC) -S -emit-llvm target.cpp -o bin/$@.ll
 
 run-pass: pthreadDetectPass target
-	$(OPT) $(LOAD_FILES) $(OPT_PASS_FLAGS) < bin/target.ll > /dev/null
+	$(OPT) $(LOAD_FILES) $(OPT_PASS_FLAGS) -S < bin/target.ll > bin/target_optimized.ll
 
 
