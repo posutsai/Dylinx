@@ -37,24 +37,34 @@ namespace {
           Function *pthread_task = dyn_cast<Function>(ci->getArgOperand(2));
           errs() << raw_ostream::GREEN << "pthread is going to execute [" << pthread_task->getName() << "] function \n";
 
-          // Chech available defined struct
+          // Check if struct.timespec is available in module
+          StructType *timespec = M.getTypeByName("struct.timespec");
+          if (!timespec) {
+            Type *types[2] = {
+              IntegerType::get(M.getContext(), 64),
+              IntegerType::get(M.getContext(), 64)
+            };
+            ArrayRef<Type *> arrRef(types);
+            timespec = StructType::create(M.getContext(), arrRef, "struct.timespec");
+          }
+
           BasicBlock &entryBB = pthread_task->getEntryBlock();
           for (StructType *st: M.getIdentifiedStructTypes()) {
             errs() << st->getName() << '\n';
           }
 
           // declare nonCricticStart and nonCriticEnd
-          AllocaInst *allocaNonCriticStart = new AllocaInst(M.getTypeByName("struct.timespec"), 0, "nonCriticStart");
+          AllocaInst *allocaNonCriticStart = new AllocaInst(timespec, 0, "nonCriticStart");
           allocaNonCriticStart->setAlignment(MaybeAlign(8));
           entryBB.getInstList().insert(entryBB.begin(), allocaNonCriticStart);
-          AllocaInst *allocaNonCriticEnd = new AllocaInst(M.getTypeByName("struct.timespec"), 0, "nonCriticEnd");
+          AllocaInst *allocaNonCriticEnd = new AllocaInst(timespec, 0, "nonCriticEnd");
           allocaNonCriticEnd->setAlignment(MaybeAlign(8));
           entryBB.getInstList().insert(entryBB.begin(), allocaNonCriticEnd);
           // declare criticStart and criticEnd
-          AllocaInst *allocaCriticStart = new AllocaInst(M.getTypeByName("struct.timespec"), 0, "criticStart");
+          AllocaInst *allocaCriticStart = new AllocaInst(timespec, 0, "criticStart");
           allocaCriticStart->setAlignment(MaybeAlign(8));
           entryBB.getInstList().insert(entryBB.begin(), allocaCriticStart);
-          AllocaInst *allocaCriticEnd = new AllocaInst(M.getTypeByName("struct.timespec"), 0, "criticEnd");
+          AllocaInst *allocaCriticEnd = new AllocaInst(timespec, 0, "criticEnd");
           allocaCriticEnd->setAlignment(MaybeAlign(8));
           entryBB.getInstList().insert(entryBB.begin(), allocaCriticEnd);
 
