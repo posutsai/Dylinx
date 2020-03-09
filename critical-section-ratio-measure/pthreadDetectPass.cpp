@@ -8,9 +8,13 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Alignment.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
-#include "stdint.h"
+#include <stdint.h>
 #include <string>
+
+#define LOCK_TRIGGER pthread_mutex_lock
+#define UNLOCK_TRIGGER pthread_mutex_unlock
 
 using namespace llvm;
 
@@ -25,13 +29,36 @@ namespace {
     return -1;
   }
 
-  void insertTimer(Function *func) {
+  void insertTimer(Function *func, Module &M) {
     for (auto &inst: instructions(func)) {
       if (inst.getOpcode() == 56) {
         CallInst *ci = dyn_cast<CallInst>(&inst);
         if (ci && ci->getCalledFunction()->getName().compare("pthread_create") == 0) {
           Function *pthread_task = dyn_cast<Function>(ci->getArgOperand(2));
-          errs() << "pthread is going to execute " << pthread_task->getName() << "function \n";
+          errs() << raw_ostream::GREEN << "pthread is going to execute [" << pthread_task->getName() << "] function \n";
+
+          // Chech available defined struct
+          BasicBlock &entryBB = pthread_task->getEntryBlock();
+          for (StructType *st: M.getIdentifiedStructTypes()) {
+            errs() << st->getName() << '\n';
+          }
+
+          // declare nonCricticStart and nonCriticEnd
+          AllocaInst *allocaNonCriticStart = new AllocaInst(M.getTypeByName("struct.timespec"), 0, "nonCriticStart");
+          allocaNonCriticStart->setAlignment(MaybeAlign(8));
+          entryBB.getInstList().insert(entryBB.begin(), allocaNonCriticStart);
+          AllocaInst *allocaNonCriticEnd = new AllocaInst(M.getTypeByName("struct.timespec"), 0, "nonCriticEnd");
+          allocaNonCriticEnd->setAlignment(MaybeAlign(8));
+          entryBB.getInstList().insert(entryBB.begin(), allocaNonCriticEnd);
+          // declare criticStart and criticEnd
+          AllocaInst *allocaCriticStart = new AllocaInst(M.getTypeByName("struct.timespec"), 0, "criticStart");
+          allocaCriticStart->setAlignment(MaybeAlign(8));
+          entryBB.getInstList().insert(entryBB.begin(), allocaCriticStart);
+          AllocaInst *allocaCriticEnd = new AllocaInst(M.getTypeByName("struct.timespec"), 0, "criticEnd");
+          allocaCriticEnd->setAlignment(MaybeAlign(8));
+          entryBB.getInstList().insert(entryBB.begin(), allocaCriticEnd);
+
+
         }
       }
     }
@@ -45,7 +72,7 @@ namespace {
         GlobalValue::CommonLinkage,
         ConstantInt::get(IntegerType::get(M.getContext(), 32), 0),
         "testGV");
-    gVar->setAlignment(4); // Issue may happen here.
+    gVar->setAlignment(MaybeAlign(4)); // Issue may happen here.
     return gVar;
   }
 
@@ -64,7 +91,7 @@ namespace {
           int32_t target_i = isDispatchPthread(node);
           if (target_i >= 0 && currFunc) {
             errs() << "The function " << currFunc -> getName() << " will use pthread_create function at " << target_i << '\n';
-            insertTimer(currFunc);
+            insertTimer(currFunc, M);
           }
         }
       }
