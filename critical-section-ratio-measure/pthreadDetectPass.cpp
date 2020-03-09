@@ -13,8 +13,8 @@
 #include <stdint.h>
 #include <string>
 
-#define LOCK_TRIGGER pthread_mutex_lock
-#define UNLOCK_TRIGGER pthread_mutex_unlock
+#define LOCK_TRIGGER "pthread_mutex_lock"
+#define UNLOCK_TRIGGER "pthread_mutex_unlock"
 
 using namespace llvm;
 
@@ -35,7 +35,7 @@ namespace {
         CallInst *ci = dyn_cast<CallInst>(&inst);
         if (ci && ci->getCalledFunction()->getName().compare("pthread_create") == 0) {
           Function *pthread_task = dyn_cast<Function>(ci->getArgOperand(2));
-          errs() << raw_ostream::GREEN << "pthread is going to execute [" << pthread_task->getName() << "] function \n";
+          errs() << raw_ostream::GREEN << "pthread is going to execute [" << pthread_task->getName() << "] function \n" << raw_ostream::RESET;
 
           // Check if struct.timespec is available in module
           StructType *timespec = M.getTypeByName("struct.timespec");
@@ -49,11 +49,9 @@ namespace {
           }
 
           BasicBlock &entryBB = pthread_task->getEntryBlock();
-          for (StructType *st: M.getIdentifiedStructTypes()) {
-            errs() << st->getName() << '\n';
-          }
-
           // declare nonCricticStart and nonCriticEnd
+          // Note:
+          //  The AllocaInst pointer is also the address pointer to the allocated value.
           AllocaInst *allocaNonCriticStart = new AllocaInst(timespec, 0, "nonCriticStart");
           allocaNonCriticStart->setAlignment(MaybeAlign(8));
           entryBB.getInstList().insert(entryBB.begin(), allocaNonCriticStart);
@@ -68,7 +66,35 @@ namespace {
           allocaCriticEnd->setAlignment(MaybeAlign(8));
           entryBB.getInstList().insert(entryBB.begin(), allocaCriticEnd);
 
+          Function *clock_gettime = M.getFunction("clock_gettime");
 
+          // Note:
+          //  Recursive locking or locking without post-unlocking may exist
+          CallInst *lock_ci = nullptr;
+          CallInst *unlock_ci = nullptr;
+          for (auto &task_inst: instructions(pthread_task)) {
+            // Get the most exterior locking and unlocking trigger
+            if (inst.getOpcode() == 56) {
+              CallInst *ci = dyn_cast<CallInst>(&task_inst);
+              if (ci && !lock_ci && ci->getCalledFunction()->getName().compare(LOCK_TRIGGER) == 0) {
+                // Call clock_gettime
+                lock_ci = ci;
+                Value *args[2] = {
+                  ConstantInt::get(IntegerType::get(M.getContext(), 32), 1, true),
+                  allocaCriticStart
+                };
+                ArrayRef<Value *> arrRef(args);
+                CallInst::Create(clock_gettime, arrRef, "criticTimerStart", lock_ci->getNextNode());
+              } else if (ci && ci->getCalledFunction()->getName().compare(UNLOCK_TRIGGER) == 0)
+                unlock_ci = ci;
+            }
+          }
+          Value *args[2] = {
+            ConstantInt::get(IntegerType::get(M.getContext(), 32), 1, true),
+            allocaCriticEnd
+          };
+          ArrayRef<Value *> arrRef(args);
+          CallInst::Create(clock_gettime, arrRef, "criticTimerEnd", unlock_ci);
         }
       }
     }
