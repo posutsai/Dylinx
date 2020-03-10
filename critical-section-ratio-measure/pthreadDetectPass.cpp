@@ -67,6 +67,18 @@ namespace {
           entryBB.getInstList().insert(entryBB.begin(), allocaCriticEnd);
 
           Function *clock_gettime = M.getFunction("clock_gettime");
+          if (!clock_gettime) {
+            Type *types[2] = {
+              IntegerType::get(M.getContext(), 32),
+              PointerType::get(timespec, 0)
+            };
+            ArrayRef<Type *> arrRef(types);
+            FunctionType *FT = FunctionType::get(
+                  IntegerType::get(M.getContext(), 32),
+                  arrRef, false
+            );
+            clock_gettime = Function::Create(FT, GlobalValue::ExternalLinkage, "clock_gettime", M);
+          }
 
           // Insert timer for non-critical section
           {
@@ -82,7 +94,7 @@ namespace {
           //  Recursive locking or locking without post-unlocking may exist
           CallInst *lock_ci = nullptr;
           CallInst *unlock_ci = nullptr;
-          Instruction *non_critic_start = nullptr;
+          CallInst *non_critic_end = nullptr;
           for (auto &task_inst: instructions(pthread_task)) {
             // Get the most exterior locking and unlocking trigger
             // Note:
@@ -110,7 +122,7 @@ namespace {
                 allocaNonCriticEnd
               };
               ArrayRef<Value *> arrRef(args);
-              CallInst::Create(clock_gettime, arrRef, "nonCriticTimerEnd", ri);
+              non_critic_end = CallInst::Create(clock_gettime, arrRef, "nonCriticTimerEnd", ri);
             }
           }
           {
@@ -120,6 +132,21 @@ namespace {
             };
             ArrayRef<Value *> arrRef(args);
             CallInst::Create(clock_gettime, arrRef, "criticTimerEnd", unlock_ci);
+          }
+          {
+            Type *types[2] = {
+              PointerType::get(timespec, 0),
+              PointerType::get(timespec, 0)
+            };
+            ArrayRef<Type *>arrRefTypes(types);
+            FunctionType *FT = FunctionType::get(
+              IntegerType::get(M.getContext(), 64),
+              arrRefTypes, false
+            );
+            Function *get_duration = Function::Create(FT, GlobalValue::ExternalLinkage, "get_duration", M);
+            Value *params[2] = {allocaCriticEnd, allocaCriticStart};
+            ArrayRef<Value *> arrRefVal(params);
+            CallInst::Create(get_duration, arrRefVal, "criticalDur", non_critic_end->getNextNode());
           }
         }
       }

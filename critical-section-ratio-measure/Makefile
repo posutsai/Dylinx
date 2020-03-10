@@ -22,10 +22,10 @@ run-pass: pthreadDetectPass target
 # The third argument of pthread_create: void *(*start_routine) (void *) has chances
 # defined in other compilation unit. In that case, we have to make sure start_routine
 # is able to access the global duration variable.
-test-external-link: run-pass utils.cpp
+test-external-link: run-pass measure.cpp
 	$(CXX) -c bin/target_optimized.ll -o bin/target_optimized.o
-	$(CXX) -c utils.cpp -o bin/utils.o
-	$(CXX) bin/utils.o bin/target_optimized.o $(BUILD_LD_FLAGS) -o bin/optimized
+	$(CXX) -c measure.cpp -o bin/measure.o
+	$(CXX) bin/measure.o bin/target_optimized.o $(BUILD_LD_FLAGS) -o bin/optimized
 
 clean:
 	/bin/rm -rf bin/*
