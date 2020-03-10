@@ -68,13 +68,27 @@ namespace {
 
           Function *clock_gettime = M.getFunction("clock_gettime");
 
+          // Insert timer for non-critical section
+          {
+            Value *args[2] = {
+              ConstantInt::get(IntegerType::get(M.getContext(), 32), 1, true),
+              allocaNonCriticStart
+            };
+            ArrayRef<Value *> arrRef(args);
+            CallInst::Create(clock_gettime, arrRef, "nonCriticTimerStart", allocaNonCriticStart->getNextNode());
+          }
+
           // Note:
           //  Recursive locking or locking without post-unlocking may exist
           CallInst *lock_ci = nullptr;
           CallInst *unlock_ci = nullptr;
+          Instruction *non_critic_start = nullptr;
           for (auto &task_inst: instructions(pthread_task)) {
             // Get the most exterior locking and unlocking trigger
-            if (inst.getOpcode() == 56) {
+            // Note:
+            //  Potential bug is that if the source input unlock or lock in differennt
+            //  executing path. Try to insert timer depending on lock instance.
+            if (isa<CallInst>(task_inst)) {
               CallInst *ci = dyn_cast<CallInst>(&task_inst);
               if (ci && !lock_ci && ci->getCalledFunction()->getName().compare(LOCK_TRIGGER) == 0) {
                 // Call clock_gettime
@@ -87,14 +101,26 @@ namespace {
                 CallInst::Create(clock_gettime, arrRef, "criticTimerStart", lock_ci->getNextNode());
               } else if (ci && ci->getCalledFunction()->getName().compare(UNLOCK_TRIGGER) == 0)
                 unlock_ci = ci;
+            } else if (isa<ReturnInst>(task_inst)) {
+              // To prevent miss measuring end of the non-critical section due to branch,
+              // we insert timer in before every return instruction.
+              ReturnInst *ri = dyn_cast<ReturnInst>(&task_inst);
+              Value *args[2] = {
+                ConstantInt::get(IntegerType::get(M.getContext(), 32), 1, true),
+                allocaNonCriticEnd
+              };
+              ArrayRef<Value *> arrRef(args);
+              CallInst::Create(clock_gettime, arrRef, "nonCriticTimerEnd", ri);
             }
           }
-          Value *args[2] = {
-            ConstantInt::get(IntegerType::get(M.getContext(), 32), 1, true),
-            allocaCriticEnd
-          };
-          ArrayRef<Value *> arrRef(args);
-          CallInst::Create(clock_gettime, arrRef, "criticTimerEnd", unlock_ci);
+          {
+            Value *args[2] = {
+              ConstantInt::get(IntegerType::get(M.getContext(), 32), 1, true),
+              allocaCriticEnd
+            };
+            ArrayRef<Value *> arrRef(args);
+            CallInst::Create(clock_gettime, arrRef, "criticTimerEnd", unlock_ci);
+          }
         }
       }
     }
