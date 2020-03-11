@@ -146,7 +146,7 @@ namespace {
             Function *get_duration = Function::Create(FT, GlobalValue::ExternalLinkage, "get_duration", M);
             Value *params[2] = {allocaCriticEnd, allocaCriticStart};
             ArrayRef<Value *> arrRefVal(params);
-            CallInst::Create(get_duration, arrRefVal, "criticalDur", non_critic_end->getNextNode());
+            CallInst *ci = CallInst::Create(get_duration, arrRefVal, "criticalDur", non_critic_end->getNextNode());
           }
         }
       }
@@ -168,7 +168,6 @@ namespace {
   struct PthreadScopeDetectPass : public ModulePass {
     static char ID;
     PthreadScopeDetectPass() : ModulePass(ID) { }
-
     bool runOnModule(Module &M) override {
       CallGraph &CG = getAnalysis<CallGraphWrapperPass>().getCallGraph();
       GlobalVariable *gVar = createGV("testGV", M);

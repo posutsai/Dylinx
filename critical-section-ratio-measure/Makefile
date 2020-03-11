@@ -3,7 +3,7 @@ CC=clang-10
 OPT=opt-10
 PASS_CXX_FLAGS=`llvm-config-10 --cxxflags`
 PASS_LD_FLAGS=`llvm-config-10 --ldflags --libs all`
-BUILD_LD_FLAGS= -lpthread
+BUILD_LD_FLAGS= -L./bin -lmeasure -lpthread
 OPT_PASS_FLAGS= -pthread-detect
 LOAD_FILES= -load bin/pthreadDetectPass.so
 
@@ -24,8 +24,9 @@ run-pass: pthreadDetectPass target
 # is able to access the global duration variable.
 test-external-link: run-pass measure.cpp
 	$(CXX) -c bin/target_optimized.ll -o bin/target_optimized.o
-	$(CXX) -c measure.cpp -o bin/measure.o
-	$(CXX) bin/measure.o bin/target_optimized.o $(BUILD_LD_FLAGS) -o bin/optimized
+	$(CC) -shared -o bin/libmeasure.so -fPIC measure.cpp
+	$(CXX) bin/target_optimized.o $(BUILD_LD_FLAGS) -o bin/optimized
+	./bin/optimized
 
 clean:
 	/bin/rm -rf bin/*
