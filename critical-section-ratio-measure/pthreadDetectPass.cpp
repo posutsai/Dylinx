@@ -10,7 +10,9 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Alignment.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include <stdint.h>
+#include <stdio.h>
 #include <string>
 
 #define LOCK_TRIGGER "pthread_mutex_lock"
@@ -49,6 +51,8 @@ namespace {
           }
 
           BasicBlock &entryBB = pthread_task->getEntryBlock();
+
+          // {{{ Variable allocation for struct timespec
           // declare nonCricticStart and nonCriticEnd
           // Note:
           //  The AllocaInst pointer is also the address pointer to the allocated value.
@@ -65,6 +69,7 @@ namespace {
           AllocaInst *allocaCriticEnd = new AllocaInst(timespec, 0, "criticEnd");
           allocaCriticEnd->setAlignment(MaybeAlign(8));
           entryBB.getInstList().insert(entryBB.begin(), allocaCriticEnd);
+          // }}}
 
           Function *clock_gettime = M.getFunction("clock_gettime");
           if (!clock_gettime) {
@@ -80,6 +85,7 @@ namespace {
             clock_gettime = Function::Create(FT, GlobalValue::ExternalLinkage, "clock_gettime", M);
           }
 
+          // {{{ Insert CallInst: clock_gettime
           // Insert timer for non-critical section
           {
             Value *args[2] = {
@@ -133,44 +139,69 @@ namespace {
             ArrayRef<Value *> arrRef(args);
             CallInst::Create(clock_gettime, arrRef, "criticTimerEnd", unlock_ci);
           }
+          // }}}
+
+          // {{{ Insert CallInst: get duration
           {
-            Type *types[2] = {
+            Type *types[3] = {
               PointerType::get(timespec, 0),
-              PointerType::get(timespec, 0)
+              PointerType::get(timespec, 0),
+              PointerType::get(IntegerType::get(M.getContext(), 64), 0)
             };
             ArrayRef<Type *>arrRefTypes(types);
             FunctionType *FT = FunctionType::get(
               IntegerType::get(M.getContext(), 64),
               arrRefTypes, false
             );
-            Function *get_duration = Function::Create(FT, GlobalValue::ExternalLinkage, "get_duration", M);
-            Value *params[2] = {allocaCriticEnd, allocaCriticStart};
-            ArrayRef<Value *> arrRefVal(params);
-            CallInst *ci = CallInst::Create(get_duration, arrRefVal, "criticalDur", non_critic_end->getNextNode());
+            Function *accu_duration = Function::Create(FT, GlobalValue::ExternalLinkage, "accu_duration", M);
+            Value *critic_params[3] = {allocaCriticStart, allocaCriticEnd, M.getNamedValue("criticDurSum")};
+            ArrayRef<Value *> arr_ref_critic(critic_params);
+            Value *noncritic_params[3] = {allocaNonCriticStart, allocaNonCriticEnd, M.getNamedValue("nonCriticDurSum")};
+            ArrayRef<Value *> arr_ref_noncritic(noncritic_params);
+            CallInst *critic_measure = CallInst::Create(accu_duration, arr_ref_critic, "criticalDur", non_critic_end->getNextNode());
+            CallInst *noncritic_measure = CallInst::Create(accu_duration, arr_ref_noncritic, "nonCriticalDur", critic_measure->getNextNode());
           }
+          // }}}
+
+          Value *dispatch_params[1] = { ci->getArgOperand(3) };
+          ArrayRef<Value *> arr_ref_dispatch(dispatch_params);
+          CallInst *flatten_dispatch = CallInst::Create(pthread_task, arr_ref_dispatch, "haha", ci);
+          errs() << "Is pthread_create safe to remove? " << ci->isSafeToRemove() << '\n';
+          errs() << "Does pthread_create have side effect? " << ci->mayHaveSideEffects() << '\n';
+          // ReplaceInstWithInst(ci, flatten_dispatch);
+          // ci->eraseFromParent();
         }
       }
     }
   }
-  GlobalVariable *createGV(std::string name, Module &M) {
+  void createGV(Module &M) {
     // The global variable here would be used to accumulate time
     // duration including critical and non-critical.
-    GlobalVariable *gVar = new GlobalVariable(
-        M, IntegerType::get(M.getContext(), 32),
+    GlobalVariable *critic_dur_sum = new GlobalVariable(
+        M, IntegerType::get(M.getContext(), 64),
         false,
         GlobalValue::CommonLinkage,
-        ConstantInt::get(IntegerType::get(M.getContext(), 32), 0),
-        "testGV");
-    gVar->setAlignment(MaybeAlign(4)); // Issue may happen here.
-    return gVar;
+        ConstantInt::get(IntegerType::get(M.getContext(), 64), 0),
+        "criticDurSum");
+    critic_dur_sum->setAlignment(MaybeAlign(8));
+    GlobalVariable *noncritic_dur_sum = new GlobalVariable(
+        M, IntegerType::get(M.getContext(), 64),
+        false,
+        GlobalValue::CommonLinkage,
+        ConstantInt::get(IntegerType::get(M.getContext(), 64), 0),
+        "nonCriticDurSum");
+    noncritic_dur_sum->setAlignment(MaybeAlign(8));
   }
 
   struct PthreadScopeDetectPass : public ModulePass {
     static char ID;
     PthreadScopeDetectPass() : ModulePass(ID) { }
     bool runOnModule(Module &M) override {
+      FILE *fp = fopen("./hello.txt", "a+");
+      fprintf(fp, "helloworld\n");
+      fclose(fp);
       CallGraph &CG = getAnalysis<CallGraphWrapperPass>().getCallGraph();
-      GlobalVariable *gVar = createGV("testGV", M);
+      createGV(M);
       uint32_t nSCC  = 0;
       for (scc_iterator<CallGraph *> iterSCC = scc_begin(&CG); !iterSCC.isAtEnd(); ++iterSCC) {
         auto nodes = *iterSCC;
