@@ -4,31 +4,46 @@
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Casting.h"
 #include "clang/Tooling/Tooling.h"
 #include <iostream>
+#include <cstdio>
+#include <cstdint>
+#include <string>
+#include <regex>
 
 using namespace clang::tooling;
-using namespace llvm;
 using namespace clang;
-
+using namespace llvm;
 class FindCommentsConsumer : public clang::ASTConsumer {
 public:
   explicit FindCommentsConsumer(ASTContext *Context) {}
 
   virtual void HandleTranslationUnit(clang::ASTContext &Context) {
     SourceManager& sm = Context.getSourceManager();
-    auto *comments = Context.getRawCommentList().getCommentsInFile(sm.getMainFileID());
-    for (auto comment : *comments) {
-      std::cout << comment.second->getRawText(Context.getSourceManager()).str() << std::endl;
+    auto decls = Context.getTranslationUnitDecl()->decls();
+    for (auto &decl: decls) {
+      if (sm.isInSystemHeader(decl->getLocation()) || !isa<FunctionDecl>(decl) && !isa<LinkageSpecDecl>(decl))
+        continue;
+      if (auto *comments = Context.getRawCommentList().getCommentsInFile(
+            sm.getFileID(decl->getLocation()))) {
+        for (auto cmt : *comments) {
+          std::cout << "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n";
+          llvm::outs() << "At " << sm.getFilename(decl->getLocation()).str() << '\n'
+            << cmt.second->getRawText(Context.getSourceManager()).str() << '\n';
+          std::cout << "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n";
+          std::string comb = cmt.second->getRawText(Context.getSourceManager()).str();
+          std::smatch sm;
+          std::regex re("\\/\\/! \\[LockSlot\\](.*)");
+          std::regex_match(comb, sm, re);
+          for (uint32_t i = 0; i < sm.size(); i++) {
+            std::cout << sm[i] << std::endl;
+          }
+        }
+      }
     }
-    // std::cout << "Finished parsing for comments" << std::endl;
-    // llvm::DenseMap<const Decl *, const RawComment *> map = Context.DeclRawComments;
-    // llvm::outs() << "The size of comment_map " << map.size() << '\n';
-    // llvm::DenseMap<const Decl *, const RawComment *>::iterator it = map.begin();
-    // while (it != map.end()) {
-    //   // it->second->dump();
-    //   llvm::outs() << it->second->getRawText(sm) << '\n';
-    // }
+    // auto *comments = Context.getRawCommentList().getCommentsInFile(sm.getMainFileID());
   }
 };
 
@@ -41,10 +56,11 @@ public:
   }
 };
 
-static llvm::cl::OptionCategory MyToolCategory("My tool options");
+
 int main(int argc, const char **argv) {
-      CommonOptionsParser OptionsParser(argc, argv, MyToolCategory);
-      ClangTool Tool(OptionsParser.getCompilations(),
-                 OptionsParser.getSourcePathList());
-      return Tool.run(newFrontendActionFactory<FindCommentsAction>().get());
+  std::string err;
+  const char *compiler_db_path = argv[1];
+  std::unique_ptr<CompilationDatabase> compiler_db = CompilationDatabase::autoDetectFromSource(compiler_db_path, err);
+  ClangTool tool(*compiler_db, compiler_db->getAllFiles());
+  return tool.run(newFrontendActionFactory<FindCommentsAction>().get());
 }

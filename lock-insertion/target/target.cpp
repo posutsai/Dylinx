@@ -1,6 +1,7 @@
 #include <stdio.h>
+#include "bar.h"
 #include <pthread.h>
-// #include <time.h>
+#include <time.h>
 #include <unistd.h>
 // hahahhaah
 extern "C" {
@@ -8,20 +9,11 @@ extern "C" {
 
   void *foo(void *args) {
     sleep(3);
-    /**
-     *  this is comment
-     */
-    /*! \file hah
-     *
-     */
-    /// comment
-    /// \foo
-    /// hello
-    /// \foo
-    pthread_mutex_lock(&g_lock); //! ttas
+    pthread_mutex_lock(&g_lock); //! [LockSlot] ttas
     sleep(2);
     pthread_mutex_unlock(&g_lock);
-    return NULL;
+    bar();
+    return 0;
   }
 
   int main(int argc, char *argv[]) {

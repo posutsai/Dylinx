@@ -1,7 +1,7 @@
 [
 {
     "directory": "/home/plate/git/ContentionModel/lock-insertion",
-    "arguments": ["/usr/bin/ccache", "/usr/local/bin/clang++", "-c", "-std=c++14", "-fparse-all-comments", "-I/usr/local/lib/clang/10.0.0/include", "-Qunused-arguments", "-m64", "-I/usr/local/include", "-I/usr/include", "-o", "build/.objs/input/linux/x86_64/release/target/target.cpp.o", "target/target.cpp"],
-    "file": "target/target.cpp"
+    "arguments": ["/usr/bin/ccache", "/usr/local/bin/clang++", "-c", "-std=c++14", "-I/usr/local/lib/clang/10.0.0/include", "-Qunused-arguments", "-m64", "-I/usr/local/include", "-I/usr/include", "-o", "build/.objs/simple/linux/x86_64/release/target/simple.cpp.o", "target/simple.cpp"],
+    "file": "target/simple.cpp"
   }
 ]
