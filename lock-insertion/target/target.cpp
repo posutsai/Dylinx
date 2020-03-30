@@ -9,7 +9,8 @@ extern "C" {
 
   void *foo(void *args) {
     sleep(3);
-    pthread_mutex_lock(&g_lock); //! [LockSlot] ttas
+    pthread_mutex_lock(&g_lock); //! [LockSlot] TTAS, MUTEX, SPINLOCK
+    pthread_mutex_lock(&g_lock); //! [LockSlot] TTAS
     sleep(2);
     pthread_mutex_unlock(&g_lock);
     bar();
