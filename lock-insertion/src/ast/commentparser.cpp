@@ -2,6 +2,7 @@
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Type.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/Decl.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -32,87 +33,119 @@ using namespace llvm;
 using namespace clang::tooling;
 using namespace clang::ast_matchers;
 
-typedef std::map<std::string, std::vector<std::pair<uint32_t, FullSourceLoc>>> FilePath2InsertingPtMap_t;
-typedef std::vector<std::pair<uint32_t, FullSourceLoc>> InsertingPts_t;
+uint64_t g_lock_cnt = 0;
+
+typedef std::pair<FileID, uint32_t> CommentID;
 
 class SlotLockerHandler: public MatchFinder::MatchCallback {
 public:
-  SlotLockerHandler(Rewriter &rw, std::map<std::pair<std::string, uint32_t>, FullSourceLoc> *line2func_loc)
-    : rw(rw), i(0), file_path2inserting_pt(file_path2inserting_pt) {}
+  SlotLockerHandler(Rewriter &rw): rw(rw) {}
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("locks")) {
-      ASTContext *Context = result.Context;
-      SourceManager& sm = Context->getSourceManager();
-      std::string slot_key = getAbsolutePath(sm.getFileEntryForID(sm.getFileID(e->getBeginLoc()))->getName());
-      if ((*file_path2inserting_pt).find(slot_key) == (*file_path2inserting_pt).end())
-        return;
-      InsertingPts_t points = (*file_path2inserting_pt)[slot_key];
-      int32_t i_loc = haveSlotComb(sm.getSpellingLineNumber(e->getBeginLoc()), points);
-      if (i_loc < 0)
-        return;
-      FullSourceLoc func_begin = points[i_loc].second;
-      std::string slot_name("___lock_slot_");
-      slot_name += std::to_string(i);
-      rw.InsertTextBefore(
-        func_begin,
-        "\nextern int " + slot_name + "(pthread_mutex_t *mutex);"
-      );
+      std::string slot_name("___dylinx_slot_lock_");
       rw.ReplaceText(e->getCallee()->getSourceRange(), slot_name);
-      i++;
     }
-  }
-  int32_t haveSlotComb(uint32_t matched_line, InsertingPts_t points) {
-    for (uint32_t i = 0; i < points->size(); i++) {
-      if (points[0].first == matched_line)
-        return i;
-    }
-    return -1;
   }
 private:
-  unsigned int i;
   Rewriter &rw;
-  FilePath2InsertingPtMap_t *file_path2inserting_pt;
 };
 
 class SlotUnlockerHandler: public MatchFinder::MatchCallback {
 public:
-  SlotUnlockerHandler(Rewriter &rw, std::map<std::pair<std::string, uint32_t>, FullSourceLoc> *line2func_loc)
-  : rw(rw), i(0), line2func_loc(line2func_loc) {}
+  SlotUnlockerHandler(Rewriter &rw) : rw(rw) {}
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("unlocks")) {
-      ASTContext *Context = result.Context;
-      SourceManager& sm = Context->getSourceManager();
-      std::pair<std::string, uint32_t> slot_key = make_pair(
-        getAbsolutePath(sm.getFileEntryForID(sm.getFileID(e->getBeginLoc()))->getName()),
-        sm.getSpellingLineNumber(e->getBeginLoc())
-      );
-      if ((*line2func_loc).find(slot_key) == (*line2func_loc).end())
-        return;
-      FullSourceLoc func_begin = (*line2func_loc)[slot_key];
-      std::string slot_name("___unlock_slot_");
-      slot_name += std::to_string(i);
-      rw.InsertTextBefore(
-        func_begin,
-        "\nextern int " + slot_name + "(pthread_mutex_t *mutex);"
-      );
+      std::string slot_name("___dylinx_slot_unlock_");
       rw.ReplaceText(e->getCallee()->getSourceRange(), slot_name);
-      i++;
     }
   }
 private:
-  unsigned int i;
   Rewriter &rw;
-  std::map<std::pair<std::string, uint32_t>, FullSourceLoc> *line2func_loc;
+};
+
+class SlotInitHandler: public MatchFinder::MatchCallback {
+public:
+  SlotInitHandler(Rewriter &rw) : rw(rw) {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("inits")) {
+      std::string slot_name("___dylinx_slot_init_");
+      rw.ReplaceText(e->getCallee()->getSourceRange(), slot_name);
+    }
+  }
+private:
+  Rewriter &rw;
+};
+
+
+class SlotDestroyHandler: public MatchFinder::MatchCallback {
+public:
+  SlotDestroyHandler(Rewriter &rw) : rw(rw) {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("destroys")) {
+      std::string slot_name("___dylinx_slot_destroy_");
+      rw.ReplaceText(e->getCallee()->getSourceRange(), slot_name);
+    }
+  }
+private:
+  Rewriter &rw;
+};
+
+class SlotVarsHandler: public MatchFinder::MatchCallback {
+public:
+  SlotVarsHandler(Rewriter &rw, std::map<CommentID, bool> *commented_locks) :
+    rw(rw), commented_locks(commented_locks) {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    // Take care to the varDecl in the function argument
+    if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("vars")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      SourceLocation loc = d->getSourceRange().getBegin();
+      FileID src_id = sm.getFileID(loc);
+      uint32_t line = sm.getSpellingLineNumber(loc);
+      printf("Hash:%u Line %u variable name is %s @(%u, %u) isFirstDecl: %u\n",
+        src_id.getHashValue(),
+        line,
+        d->getName().str().c_str(),
+        sm.getSpellingColumnNumber(d->getBeginLoc()),
+        sm.getSpellingColumnNumber(d->getEndLoc()),
+        d->isFirstDecl()
+      );
+      CommentID key = std::make_pair(src_id, line);
+      if (commented_locks->find(key) != commented_locks->end()) {
+        std::string cur_lock_id = "_lock_id";
+        cur_lock_id += std::to_string(g_lock_cnt);
+        rw.ReplaceText(d->getEndLoc(), d->getName().size(), cur_lock_id);
+        g_lock_cnt++;
+        if (!(*commented_locks)[key]) {
+          rw.ReplaceText(d->getBeginLoc(), 15, "BaseLock");
+          (*commented_locks)[key] = true;
+        }
+      } else {
+        fprintf(stderr, "no matched statement!!! %u\n", d->isFunctionOrMethodVarDecl());
+      }
+    }
+  }
+private:
+  Rewriter &rw;
+  std::map<CommentID, bool> *commented_locks;
 };
 
 class SlotIdentificationConsumer : public clang::ASTConsumer {
 public:
-  explicit SlotIdentificationConsumer(ASTContext *Context, Rewriter &rw)
-    : handler_for_lock(rw, &line2func_loc), handler_for_unlock(rw, &line2func_loc) {}
+  explicit SlotIdentificationConsumer(ASTContext *Context, Rewriter &rw):
+    handler_for_lock(rw),
+    handler_for_unlock(rw),
+    handler_for_init(rw),
+    handler_for_destroy(rw),
+    handler_for_vars(rw, &commented_locks)
+  {}
   ~SlotIdentificationConsumer() {
     this->yamlfout.close();
   }
   virtual void HandleTranslationUnit(clang::ASTContext &Context) {
+    matcher.addMatcher(
+      varDecl(hasType(asString("pthread_mutex_t"))).bind("vars"),
+      &handler_for_vars
+    );
     matcher.addMatcher(
       callExpr(callee(functionDecl(hasName("pthread_mutex_lock")))).bind("locks"),
       &handler_for_lock
@@ -120,6 +153,14 @@ public:
     matcher.addMatcher(
       callExpr(callee(functionDecl(hasName("pthread_mutex_unlock")))).bind("unlocks"),
       &handler_for_unlock
+    );
+    matcher.addMatcher(
+      callExpr(callee(functionDecl(hasName("pthread_mutex_init")))).bind("inits"),
+      &handler_for_init
+    );
+    matcher.addMatcher(
+      callExpr(callee(functionDecl(hasName("pthread_mutex_destroy")))).bind("destroys"),
+      &handler_for_destroy
     );
     YAML::Node node;
     YAML::Emitter out;
@@ -148,17 +189,10 @@ public:
           if (conf_sm.size() == 2) {
             SourceLocation loc = cmt.second->getBeginLoc();
             FileID src_id = sm.getFileID(loc);
+            uint32_t line = sm.getSpellingLineNumber(loc);
             mark["filepath"] = getAbsolutePath(sm.getFileEntryForID(src_id)->getName());
-            mark["line"] = sm.getSpellingLineNumber(loc);
-            line2func_loc.insert(
-              std::make_pair(
-                std::make_pair(mark["filepath"].as<std::string>(), mark["line"].as<uint32_t>()),
-                Context.getFullLoc(decl->getBeginLoc()))
-            );
-            printf("Insertion line is %s %u\n",
-                getAbsolutePath(sm.getFileEntryForID(sm.getFileID(decl->getBeginLoc()))->getName()).c_str(),
-                Context.getFullLoc(decl->getBeginLoc())
-            );
+            mark["line"] = line;
+            commented_locks[std::make_pair(src_id, line)] = false;
             printf("key is (%s, %u)\n", mark["filepath"].as<std::string>().c_str(), mark["line"].as<uint32_t>());
             std::smatch lock_sm;
             std::string conf = conf_sm[1];
@@ -192,7 +226,10 @@ private:
   MatchFinder matcher;
   SlotLockerHandler handler_for_lock;
   SlotUnlockerHandler handler_for_unlock;
-  std::map<std::pair<std::string, uint32_t>, FullSourceLoc> line2func_loc;
+  SlotInitHandler handler_for_init;
+  SlotDestroyHandler handler_for_destroy;
+  SlotVarsHandler handler_for_vars;
+  std::map<CommentID, bool> commented_locks;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
@@ -218,6 +255,8 @@ public:
   }
 
   void EndSourceFileAction() override {
+    // Manually add the definition of BaseLock, slot_lock and
+    // slot_unlock here.
     SourceManager &sm = rw.getSourceMgr();
     FileManager &fm = sm.getFileManager();
     std::string buffer;
@@ -226,6 +265,7 @@ public:
               .write(stream);
     rw.getEditBuffer(rw.getSourceMgr().getMainFileID())
               .write(llvm::outs());
+    return;
     std::vector<std::string>::iterator it = std::find(
       compiler_db->getAllFiles().begin(),
       compiler_db->getAllFiles().end(),
