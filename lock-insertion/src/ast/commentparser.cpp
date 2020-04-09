@@ -92,8 +92,12 @@ private:
 
 class SlotVarsHandler: public MatchFinder::MatchCallback {
 public:
-  SlotVarsHandler(Rewriter &rw, std::map<CommentID, bool> *commented_locks) :
-    rw(rw), commented_locks(commented_locks) {}
+  SlotVarsHandler(
+    Rewriter &rw,
+    std::map<CommentID, bool> *commented_locks,
+    std::map<std::string, uint32_t> *replaced_vars
+  ) :
+    rw(rw), commented_locks(commented_locks), replaced_vars(replaced_vars) {}
   virtual void run(const MatchFinder::MatchResult &result) {
     // Take care to the varDecl in the function argument
     if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("vars")) {
@@ -113,6 +117,7 @@ public:
       if (commented_locks->find(key) != commented_locks->end()) {
         std::string cur_lock_id = "_lock_id";
         cur_lock_id += std::to_string(g_lock_cnt);
+        (*replaced_vars)[d->getName().str()] = g_lock_cnt;
         rw.ReplaceText(d->getEndLoc(), d->getName().size(), cur_lock_id);
         g_lock_cnt++;
         if (!(*commented_locks)[key]) {
@@ -127,7 +132,33 @@ public:
 private:
   Rewriter &rw;
   std::map<CommentID, bool> *commented_locks;
+  std::map<std::string, uint32_t> *replaced_vars;
 };
+
+class SlotFuncArgumentHandler: public MatchFinder::MatchCallback {
+public:
+  SlotFuncArgumentHandler(
+    Rewriter &rw,
+    std::map<std::string, uint32_t> *replaced_vars
+  ) :
+    rw(rw), replaced_vars(replaced_vars) {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const DeclRefExpr *e = result.Nodes.getNodeAs<DeclRefExpr>("declRefs")) {
+      const VarDecl *d = dyn_cast<VarDecl>(e->getDecl());
+      if(d && (d->isLocalVarDecl() || d->hasGlobalStorage())) {
+        std::string lock_id = "_lock_id";
+        lock_id += std::to_string(
+          (*replaced_vars)[e->getNameInfo().getName().getAsString()]
+        );
+        rw.ReplaceText(SourceRange(e->getBeginLoc(), e->getEndLoc()), lock_id);
+      }
+    }
+  }
+private:
+  Rewriter &rw;
+  std::map<std::string, uint32_t> *replaced_vars;
+};
+
 
 class SlotIdentificationConsumer : public clang::ASTConsumer {
 public:
@@ -136,31 +167,36 @@ public:
     handler_for_unlock(rw),
     handler_for_init(rw),
     handler_for_destroy(rw),
-    handler_for_vars(rw, &commented_locks)
+    handler_for_vars(rw, &commented_locks, &replaced_vars),
+    handler_for_func_args(rw, &replaced_vars)
   {}
   ~SlotIdentificationConsumer() {
     this->yamlfout.close();
   }
   virtual void HandleTranslationUnit(clang::ASTContext &Context) {
-    matcher.addMatcher(
+    matcher_1st.addMatcher(
       varDecl(hasType(asString("pthread_mutex_t"))).bind("vars"),
       &handler_for_vars
     );
-    matcher.addMatcher(
+    matcher_2nd.addMatcher(
       callExpr(callee(functionDecl(hasName("pthread_mutex_lock")))).bind("locks"),
       &handler_for_lock
     );
-    matcher.addMatcher(
+    matcher_2nd.addMatcher(
       callExpr(callee(functionDecl(hasName("pthread_mutex_unlock")))).bind("unlocks"),
       &handler_for_unlock
     );
-    matcher.addMatcher(
+    matcher_2nd.addMatcher(
       callExpr(callee(functionDecl(hasName("pthread_mutex_init")))).bind("inits"),
       &handler_for_init
     );
-    matcher.addMatcher(
+    matcher_2nd.addMatcher(
       callExpr(callee(functionDecl(hasName("pthread_mutex_destroy")))).bind("destroys"),
       &handler_for_destroy
+    );
+    matcher_2nd.addMatcher(
+      declRefExpr(to(varDecl(hasType(asString("pthread_mutex_t"))))).bind("declRefs"),
+      &handler_for_func_args
     );
     YAML::Node node;
     YAML::Emitter out;
@@ -213,7 +249,8 @@ public:
       // Add extra pair of slot_lock_i and slot_unlock_i FunctionDecl Pair in
       // corresponding TranslationUnitDecl
     }
-    matcher.matchAST(Context);
+    matcher_1st.matchAST(Context);
+    matcher_2nd.matchAST(Context);
     out << node;
     this->yamlfout << out.c_str();
   }
@@ -223,13 +260,16 @@ public:
 private:
   uint32_t mark_i = 0;
   std::ofstream yamlfout;
-  MatchFinder matcher;
+  MatchFinder matcher_1st;
+  MatchFinder matcher_2nd;
   SlotLockerHandler handler_for_lock;
   SlotUnlockerHandler handler_for_unlock;
   SlotInitHandler handler_for_init;
   SlotDestroyHandler handler_for_destroy;
   SlotVarsHandler handler_for_vars;
+  SlotFuncArgumentHandler handler_for_func_args;
   std::map<CommentID, bool> commented_locks;
+  std::map<std::string, uint32_t> replaced_vars;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
@@ -274,7 +314,7 @@ public:
     if (it == compiler_db->getAllFiles().end()) {
       fprintf(
         stderr,
-        "Can't identify the index of current file: \n%s\n",
+        "[ ERROR ]Can't identify the index of current file: \n%s\n",
         getAbsolutePath(getCurrentFile()).c_str()
       );
       std::abort();
