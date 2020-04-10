@@ -23,10 +23,8 @@
 #include "yaml-cpp/yaml.h"
 #include "util.h"
 
-// [TODO]
-// 1. Find a way to manipulate YAML content in different stage. Global variable may be
-//    a good choice.
-// 2. Output the rewritten buffer to a new file under certain path.
+// TODO
+// 1. Implement the header file for definition of each lock and glue code
 
 using namespace clang;
 using namespace llvm;
@@ -124,6 +122,8 @@ public:
           rw.ReplaceText(d->getBeginLoc(), 15, "BaseLock");
           (*commented_locks)[key] = true;
         }
+      // } else if (const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d)) {
+      //     rw.ReplaceText(d->getBeginLoc(), 15, "BaseLock");
       } else {
         fprintf(stderr, "no matched statement!!! %u\n", d->isFunctionOrMethodVarDecl());
       }
@@ -162,20 +162,27 @@ private:
 
 class SlotIdentificationConsumer : public clang::ASTConsumer {
 public:
-  explicit SlotIdentificationConsumer(ASTContext *Context, Rewriter &rw):
+  explicit SlotIdentificationConsumer(
+    ASTContext *Context,
+    Rewriter &rw,
+    std::vector<FileID> *required_header_files
+  ):
     handler_for_lock(rw),
     handler_for_unlock(rw),
     handler_for_init(rw),
     handler_for_destroy(rw),
     handler_for_vars(rw, &commented_locks, &replaced_vars),
-    handler_for_func_args(rw, &replaced_vars)
+    handler_for_func_args(rw, &replaced_vars),
+    required_header_files(required_header_files)
   {}
   ~SlotIdentificationConsumer() {
     this->yamlfout.close();
   }
   virtual void HandleTranslationUnit(clang::ASTContext &Context) {
     matcher_1st.addMatcher(
-      varDecl(hasType(asString("pthread_mutex_t"))).bind("vars"),
+      varDecl(eachOf(
+          hasType(asString("pthread_mutex_t")), hasType(asString("pthread_mutex_t *"))
+      )).bind("vars"),
       &handler_for_vars
     );
     matcher_2nd.addMatcher(
@@ -208,20 +215,13 @@ public:
         continue;
       if (auto *comments = Context.getRawCommentList().getCommentsInFile(
             sm.getFileID(decl->getLocation()))) {
+        required_header_files->push_back(sm.getFileID(decl->getLocation()));
         for (auto cmt : *comments) {
-          std::cout << "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n";
-          llvm::outs() << "At " << sm.getFilename(decl->getLocation()).str() << '\n'
-            << cmt.second->getRawText(Context.getSourceManager()).str() << '\n';
           YAML::Node mark;
-          std::cout << "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n";
           std::string comb = cmt.second->getRawText(Context.getSourceManager()).str();
           std::smatch conf_sm;
           std::regex re("\\/\\/! \\[LockSlot\\](.*)");
           std::regex_match(comb, conf_sm, re);
-          printf("the size of sm is %lu\n", conf_sm.size());
-          for (uint32_t i = 0; i < conf_sm.size(); i++) {
-            std::cout << "sm[" << i << "] = " << conf_sm[i] << std::endl;
-          }
           if (conf_sm.size() == 2) {
             SourceLocation loc = cmt.second->getBeginLoc();
             FileID src_id = sm.getFileID(loc);
@@ -245,9 +245,6 @@ public:
         }
         mark_i++;
       }
-      //! TODO
-      // Add extra pair of slot_lock_i and slot_unlock_i FunctionDecl Pair in
-      // corresponding TranslationUnitDecl
     }
     matcher_1st.matchAST(Context);
     matcher_2nd.matchAST(Context);
@@ -270,6 +267,7 @@ private:
   SlotFuncArgumentHandler handler_for_func_args;
   std::map<CommentID, bool> commented_locks;
   std::map<std::string, uint32_t> replaced_vars;
+  std::vector<FileID> *required_header_files;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
@@ -280,7 +278,8 @@ public:
     rw.setSourceMgr(Compiler.getSourceManager(), Compiler.getLangOpts());
     std::unique_ptr<SlotIdentificationConsumer> consumer(new SlotIdentificationConsumer(
       &Compiler.getASTContext(),
-      rw
+      rw,
+      &required_header_files
     ));
     consumer->setYamlFout(this->yaml_path);
     return consumer;
@@ -299,37 +298,25 @@ public:
     // slot_unlock here.
     SourceManager &sm = rw.getSourceMgr();
     FileManager &fm = sm.getFileManager();
+    for (auto &fid: required_header_files) {
+      rw.InsertText(sm.getLocForStartOfFile(fid), "#include <glue.h>\n");
+    }
     std::string buffer;
     raw_string_ostream stream(buffer);
     rw.getEditBuffer(rw.getSourceMgr().getMainFileID())
               .write(stream);
     rw.getEditBuffer(rw.getSourceMgr().getMainFileID())
               .write(llvm::outs());
-    return;
-    std::vector<std::string>::iterator it = std::find(
-      compiler_db->getAllFiles().begin(),
-      compiler_db->getAllFiles().end(),
-      getAbsolutePath(getCurrentFile())
-    );
-    if (it == compiler_db->getAllFiles().end()) {
-      fprintf(
-        stderr,
-        "[ ERROR ]Can't identify the index of current file: \n%s\n",
-        getAbsolutePath(getCurrentFile()).c_str()
-      );
-      std::abort();
-    }
-    uint32_t index = std::distance(compiler_db->getAllFiles().begin(), it);
     std::vector<std::string> args {
       "-std=c++14",
       "-I/usr/local/lib/clang/10.0.0/include",
       "-I/home/plate/git/ContentionModel/lock-insertion/target",
+      "-I/home/plate/git/ContentionModel/lock-insertion/build/include",
       "-I/usr/local/include",
       "-I/usr/include"
     };
     buildASTFromCodeWithArgs(
         stream.str(),
-        // compiler_db->getAllCompileCommands()[index].CommandLine,
         args,
         "/tmp/temp-file.cc"
     );
@@ -338,6 +325,7 @@ private:
   std::string yaml_path;
   Rewriter rw;
   std::shared_ptr<CompilationDatabase> compiler_db;
+  std::vector<FileID> required_header_files;
 };
 
 
