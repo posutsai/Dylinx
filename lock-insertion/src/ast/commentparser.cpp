@@ -7,7 +7,9 @@
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendAction.h"
+#include "clang/CodeGen/CodeGenAction.h"
 #include "clang/Tooling/CommonOptionsParser.h"
+#include "clang/Tooling/Inclusions/HeaderIncludes.h"
 #include "clang/Tooling/Tooling.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "llvm/Support/CommandLine.h"
@@ -24,7 +26,27 @@
 #include "util.h"
 
 // TODO
-// 1. Implement the header file for definition of each lock and glue code
+// 1. Implement the header file for definition of
+//    each lock and glue code.
+// 2. Copy all the dependency to the processing dir.
+// 3. If there is modifications in dependent headers,
+//    Dylinx should rename them to unique temp name
+//    and modify the code in "#include <....>" part.
+// 4. Things getting more complicated when users
+//    implement their function in different files.
+//    For example:
+//
+//    ------------------------------------------
+//    > In foo.h
+//    void foo();
+//    -------------------------------------------
+//    > In foo.cpp
+//    void foo() { }
+//    ------------------------------------------
+//
+//    In this case, merging ASTs should be considered.
+//    Or maybe compiler_commands.json would solve it
+//    for us. Still not test with "bear".
 
 using namespace clang;
 using namespace llvm;
@@ -35,57 +57,25 @@ uint64_t g_lock_cnt = 0;
 
 typedef std::pair<FileID, uint32_t> CommentID;
 
-class SlotLockerHandler: public MatchFinder::MatchCallback {
+class SlotFuncInterfaceHandler: public MatchFinder::MatchCallback {
 public:
-  SlotLockerHandler(Rewriter &rw): rw(rw) {}
+  SlotFuncInterfaceHandler(Rewriter &rw): rw(rw) {}
   virtual void run(const MatchFinder::MatchResult &result) {
-    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("locks")) {
-      std::string slot_name("___dylinx_slot_lock_");
-      rw.ReplaceText(e->getCallee()->getSourceRange(), slot_name);
+    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("interfaces")) {
+      rw.ReplaceText(
+        e->getCallee()->getSourceRange(),
+        interface_LUT[e->getDirectCallee()->getNameInfo().getName().getAsString()]
+      );
     }
   }
 private:
   Rewriter &rw;
-};
-
-class SlotUnlockerHandler: public MatchFinder::MatchCallback {
-public:
-  SlotUnlockerHandler(Rewriter &rw) : rw(rw) {}
-  virtual void run(const MatchFinder::MatchResult &result) {
-    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("unlocks")) {
-      std::string slot_name("___dylinx_slot_unlock_");
-      rw.ReplaceText(e->getCallee()->getSourceRange(), slot_name);
-    }
-  }
-private:
-  Rewriter &rw;
-};
-
-class SlotInitHandler: public MatchFinder::MatchCallback {
-public:
-  SlotInitHandler(Rewriter &rw) : rw(rw) {}
-  virtual void run(const MatchFinder::MatchResult &result) {
-    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("inits")) {
-      std::string slot_name("___dylinx_slot_init_");
-      rw.ReplaceText(e->getCallee()->getSourceRange(), slot_name);
-    }
-  }
-private:
-  Rewriter &rw;
-};
-
-
-class SlotDestroyHandler: public MatchFinder::MatchCallback {
-public:
-  SlotDestroyHandler(Rewriter &rw) : rw(rw) {}
-  virtual void run(const MatchFinder::MatchResult &result) {
-    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("destroys")) {
-      std::string slot_name("___dylinx_slot_destroy_");
-      rw.ReplaceText(e->getCallee()->getSourceRange(), slot_name);
-    }
-  }
-private:
-  Rewriter &rw;
+  std::map<std::string, std::string>interface_LUT = {
+    {"pthread_mutex_init", "___dylinx_slot_init_"},
+    {"pthread_mutex_lock", "___dylinx_slot_lock_"},
+    {"pthread_mutex_unlock", "___dylinx_slot_unlock_"},
+    {"pthread_mutex_destroy", "___dylinx_slot_destroy_"}
+  };
 };
 
 class SlotVarsHandler: public MatchFinder::MatchCallback {
@@ -167,10 +157,7 @@ public:
     Rewriter &rw,
     std::vector<FileID> *required_header_files
   ):
-    handler_for_lock(rw),
-    handler_for_unlock(rw),
-    handler_for_init(rw),
-    handler_for_destroy(rw),
+    handler_for_interface(rw),
     handler_for_vars(rw, &commented_locks, &replaced_vars),
     handler_for_func_args(rw, &replaced_vars),
     required_header_files(required_header_files)
@@ -186,20 +173,13 @@ public:
       &handler_for_vars
     );
     matcher_2nd.addMatcher(
-      callExpr(callee(functionDecl(hasName("pthread_mutex_lock")))).bind("locks"),
-      &handler_for_lock
-    );
-    matcher_2nd.addMatcher(
-      callExpr(callee(functionDecl(hasName("pthread_mutex_unlock")))).bind("unlocks"),
-      &handler_for_unlock
-    );
-    matcher_2nd.addMatcher(
-      callExpr(callee(functionDecl(hasName("pthread_mutex_init")))).bind("inits"),
-      &handler_for_init
-    );
-    matcher_2nd.addMatcher(
-      callExpr(callee(functionDecl(hasName("pthread_mutex_destroy")))).bind("destroys"),
-      &handler_for_destroy
+      callExpr(eachOf(
+        callee(functionDecl(hasName("pthread_mutex_lock"))),
+        callee(functionDecl(hasName("pthread_mutex_unlock"))),
+        callee(functionDecl(hasName("pthread_mutex_init"))),
+        callee(functionDecl(hasName("pthread_mutex_destroy")))
+      )).bind("interfaces"),
+      &handler_for_interface
     );
     matcher_2nd.addMatcher(
       declRefExpr(to(varDecl(hasType(asString("pthread_mutex_t"))))).bind("declRefs"),
@@ -259,10 +239,7 @@ private:
   std::ofstream yamlfout;
   MatchFinder matcher_1st;
   MatchFinder matcher_2nd;
-  SlotLockerHandler handler_for_lock;
-  SlotUnlockerHandler handler_for_unlock;
-  SlotInitHandler handler_for_init;
-  SlotDestroyHandler handler_for_destroy;
+  SlotFuncInterfaceHandler handler_for_interface;
   SlotVarsHandler handler_for_vars;
   SlotFuncArgumentHandler handler_for_func_args;
   std::map<CommentID, bool> commented_locks;
@@ -275,6 +252,7 @@ public:
   virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
     clang::CompilerInstance &Compiler, llvm::StringRef InFile
   ) {
+    compiler = &Compiler;
     rw.setSourceMgr(Compiler.getSourceManager(), Compiler.getLangOpts());
     std::unique_ptr<SlotIdentificationConsumer> consumer(new SlotIdentificationConsumer(
       &Compiler.getASTContext(),
@@ -303,29 +281,51 @@ public:
     }
     std::string buffer;
     raw_string_ostream stream(buffer);
+    // TODO
+    // Any modified file should be rewritten to another place.
     rw.getEditBuffer(rw.getSourceMgr().getMainFileID())
               .write(stream);
     rw.getEditBuffer(rw.getSourceMgr().getMainFileID())
               .write(llvm::outs());
+    // TODO
+    // Possible solution is to manually activate "clang" compilation
+    // and manually add extra include path.
     std::vector<std::string> args {
       "-std=c++14",
       "-I/usr/local/lib/clang/10.0.0/include",
       "-I/home/plate/git/ContentionModel/lock-insertion/target",
-      "-I/home/plate/git/ContentionModel/lock-insertion/build/include",
+      "-I/home/plate/git/ContentionModel/lock-insertion/src/include",
       "-I/usr/local/include",
-      "-I/usr/include"
+      "-I/usr/include",
+      "-S",
+      "-emit-llvm"
     };
-    buildASTFromCodeWithArgs(
+    auto ast_unit = buildASTFromCodeWithArgs(
         stream.str(),
         args,
         "/tmp/temp-file.cc"
     );
+    ASTContext &modified_ast = ast_unit->getASTContext();
+    compiler->getCodeGenOpts().MainFileName = "/tmp/temp-file.cc";
+    printf(
+        "main file is %s, \
+        Coverage Data file is %s, \
+        Coverage Note file is %s\n",
+        compiler->getCodeGenOpts().MainFileName.c_str(),
+        compiler->getCodeGenOpts().CoverageDataFile.c_str(),
+        compiler->getCodeGenOpts().CoverageNotesFile.c_str()
+    );
+    // compiler->setASTContext(&modified_ast);
+    CodeGenAction *codegen;
+    // codegen = new EmitObjAction();
+    // compiler->ExecuteAction(*codegen);
   }
 private:
   std::string yaml_path;
   Rewriter rw;
   std::shared_ptr<CompilationDatabase> compiler_db;
   std::vector<FileID> required_header_files;
+  CompilerInstance *compiler;
 };
 
 
