@@ -57,20 +57,24 @@ using namespace clang::tooling;
 using namespace clang::ast_matchers;
 namespace fs = std::filesystem;
 
-uint64_t g_lock_cnt = 0;
 std::string processing_dir = "./processing/";
 
 typedef std::pair<FileID, uint32_t> CommentID;
 
 class SlotFuncInterfaceHandler: public MatchFinder::MatchCallback {
 public:
-  SlotFuncInterfaceHandler(Rewriter &rw): rw(rw) {}
+  SlotFuncInterfaceHandler(
+    Rewriter &rw, std::map<FileID, bool> *is_req_header_modified
+  ): rw(rw), is_req_header_modified(is_req_header_modified) {}
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("interfaces")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      FileID src_id = sm.getFileID(e->getBeginLoc());
       rw.ReplaceText(
         e->getCallee()->getSourceRange(),
         interface_LUT[e->getDirectCallee()->getNameInfo().getName().getAsString()]
       );
+      (*is_req_header_modified)[src_id] = true;
     }
   }
 private:
@@ -81,6 +85,7 @@ private:
     {"pthread_mutex_unlock", "___dylinx_slot_unlock_"},
     {"pthread_mutex_destroy", "___dylinx_slot_destroy_"}
   };
+  std::map<FileID, bool> *is_req_header_modified;
 };
 
 class SlotVarsHandler: public MatchFinder::MatchCallback {
@@ -88,9 +93,13 @@ public:
   SlotVarsHandler(
     Rewriter &rw,
     std::map<CommentID, bool> *commented_locks,
-    std::map<std::string, uint32_t> *replaced_vars
+    std::map<std::string, uint32_t> *replaced_vars,
+    YAML::Node *lock_md,
+    std::map<FileID, bool> *is_req_header_modified
   ) :
-    rw(rw), commented_locks(commented_locks), replaced_vars(replaced_vars) {}
+    rw(rw), commented_locks(commented_locks), replaced_vars(replaced_vars),
+    lock_md(lock_md), is_req_header_modified(is_req_header_modified)
+  {}
   virtual void run(const MatchFinder::MatchResult &result) {
     // Take care to the varDecl in the function argument
     if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("vars")) {
@@ -98,29 +107,51 @@ public:
       SourceLocation loc = d->getSourceRange().getBegin();
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
-      printf("Hash:%u Line %u variable name is %s @(%u, %u) isFirstDecl: %u\n",
+      printf("Hash:%u Line %u variable name is %s @(%u, %u) isFunctionDecl: %u\n",
         src_id.getHashValue(),
         line,
         d->getName().str().c_str(),
         sm.getSpellingColumnNumber(d->getBeginLoc()),
         sm.getSpellingColumnNumber(d->getEndLoc()),
-        d->isFirstDecl()
+        d->isFunctionOrMethodVarDecl()
       );
       CommentID key = std::make_pair(src_id, line);
       if (commented_locks->find(key) != commented_locks->end()) {
+        // Variable declaration with comment mark.
         std::string cur_lock_id = "_lock_id";
-        cur_lock_id += std::to_string(g_lock_cnt);
-        (*replaced_vars)[d->getName().str()] = g_lock_cnt;
+        cur_lock_id += std::to_string(lock_i);
+        (*replaced_vars)[d->getSourceRange().printToString(sm)] = lock_i;
         rw.ReplaceText(d->getEndLoc(), d->getName().size(), cur_lock_id);
-        g_lock_cnt++;
         if (!(*commented_locks)[key]) {
           rw.ReplaceText(d->getBeginLoc(), 15, "BaseLock");
           (*commented_locks)[key] = true;
         }
-      // } else if (const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d)) {
-      //     rw.ReplaceText(d->getBeginLoc(), 15, "BaseLock");
+        YAML::Node loc;
+        loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
+        loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
+        loc["id"] = lock_i;
+        loc["is_commented"] = 1;
+        lock_i++;
+        (*lock_md)["LockEntity"].push_back(loc);
+        (*is_req_header_modified)[src_id] = true;
+      } else if (const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d)) {
+        // Variable declaration in function arguments list.
+        rw.ReplaceText(d->getBeginLoc(), 15, "BaseLock");
+        (*is_req_header_modified)[src_id] = true;
       } else {
-        fprintf(stderr, "no matched statement!!! %u\n", d->isFunctionOrMethodVarDecl());
+        // Commentless lock declaration.
+        std::string cur_lock_id = "_lock_id";
+        cur_lock_id += std::to_string(lock_i);
+        (*replaced_vars)[d->getSourceRange().printToString(sm)] = lock_i;
+        rw.ReplaceText(d->getEndLoc(), d->getName().size(), cur_lock_id);
+        YAML::Node loc;
+        loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
+        loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
+        loc["id"] = lock_i;
+        loc["is_commented"] = 0;
+        lock_i++;
+        (*lock_md)["LockEntity"].push_back(loc);
+        (*is_req_header_modified)[src_id] = true;
       }
     }
   }
@@ -128,6 +159,9 @@ private:
   Rewriter &rw;
   std::map<CommentID, bool> *commented_locks;
   std::map<std::string, uint32_t> *replaced_vars;
+  YAML::Node *lock_md;
+  uint32_t lock_i = 0;
+  std::map<FileID, bool> *is_req_header_modified;
 };
 
 class SlotFuncArgumentHandler: public MatchFinder::MatchCallback {
@@ -139,11 +173,12 @@ public:
     rw(rw), replaced_vars(replaced_vars) {}
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const DeclRefExpr *e = result.Nodes.getNodeAs<DeclRefExpr>("declRefs")) {
+      SourceManager& sm = result.Context->getSourceManager();
       const VarDecl *d = dyn_cast<VarDecl>(e->getDecl());
       if(d && (d->isLocalVarDecl() || d->hasGlobalStorage())) {
         std::string lock_id = "_lock_id";
         lock_id += std::to_string(
-          (*replaced_vars)[e->getNameInfo().getName().getAsString()]
+          (*replaced_vars)[d->getSourceRange().printToString(sm)]
         );
         rw.ReplaceText(SourceRange(e->getBeginLoc(), e->getEndLoc()), lock_id);
       }
@@ -162,8 +197,8 @@ public:
     Rewriter &rw,
     std::map<FileID, bool> *is_req_header_modified
   ):
-    handler_for_interface(rw),
-    handler_for_vars(rw, &commented_locks, &replaced_vars),
+    handler_for_interface(rw, is_req_header_modified),
+    handler_for_vars(rw, &commented_locks, &replaced_vars, &lock_md, is_req_header_modified),
     handler_for_func_args(rw, &replaced_vars),
     is_req_header_modified(is_req_header_modified)
   {}
@@ -190,8 +225,8 @@ public:
       declRefExpr(to(varDecl(hasType(asString("pthread_mutex_t"))))).bind("declRefs"),
       &handler_for_func_args
     );
-    YAML::Node node;
     YAML::Emitter out;
+    YAML::Node node;
     SourceManager& sm = Context.getSourceManager();
     auto decls = Context.getTranslationUnitDecl()->decls();
     YAML::Node markers;
@@ -199,8 +234,7 @@ public:
       if (sm.isInSystemHeader(decl->getLocation()) || !isa<FunctionDecl>(decl) && !isa<LinkageSpecDecl>(decl))
         continue;
       (*is_req_header_modified)[sm.getFileID(decl->getLocation())] = false;
-      if (auto *comments = Context.getRawCommentList().getCommentsInFile(
-            sm.getFileID(decl->getLocation()))) {
+      if (auto *comments = Context.getRawCommentList().getCommentsInFile(sm.getFileID(decl->getLocation()))) {
         (*is_req_header_modified)[sm.getFileID(decl->getLocation())] = true;
         for (auto cmt : *comments) {
           YAML::Node mark;
@@ -235,6 +269,7 @@ public:
     matcher_1st.matchAST(Context);
     matcher_2nd.matchAST(Context);
     out << node;
+    out << lock_md;
     this->yamlfout << out.c_str();
   }
   void setYamlFout(std::string path) {
@@ -251,6 +286,7 @@ private:
   std::map<CommentID, bool> commented_locks;
   std::map<std::string, uint32_t> replaced_vars;
   std::map<FileID, bool> *is_req_header_modified;
+  YAML::Node lock_md;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
@@ -340,7 +376,7 @@ public:
       std::size_t dir_pos = filename.find_last_of("/");
       filename = filename.substr(dir_pos + 1, filename.length());
       filename = processing_dir + filename;
-      std::remove(filename.c_str());
+      // std::remove(filename.c_str());
     }
     rw.getEditBuffer(rw.getSourceMgr().getMainFileID())
               .write(llvm::outs());
