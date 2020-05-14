@@ -77,9 +77,9 @@ private:
   ~Dylinx() {};
 };
 
-class SlotFuncInterfaceHandler: public MatchFinder::MatchCallback {
+class FuncInterfaceMatchHandler: public MatchFinder::MatchCallback {
 public:
-  SlotFuncInterfaceHandler() {}
+  FuncInterfaceMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("interfaces")) {
       SourceManager& sm = result.Context->getSourceManager();
@@ -100,9 +100,21 @@ private:
   };
 };
 
-class SlotVarsHandler: public MatchFinder::MatchCallback {
+class TypedefMatchHandler: public MatchFinder::MatchCallback {
 public:
-  SlotVarsHandler(YAML::Node *lock_md) : lock_md(lock_md) {}
+  TypedefMatchHandler() {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const TypedefNameDecl *d = result.Nodes.getNodeAs<TypedefNameDecl>("typedefs")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      SourceLocation loc = d->getBeginLoc();
+    }
+  }
+// private:
+};
+
+class VarsMatchHandler: public MatchFinder::MatchCallback {
+public:
+  VarsMatchHandler(YAML::Node *lock_md) : lock_md(lock_md) {}
   virtual void run(const MatchFinder::MatchResult &result) {
     // Take care to the varDecl in the function argument
     if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("vars")) {
@@ -110,8 +122,9 @@ public:
       SourceLocation loc = d->getSourceRange().getBegin();
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
-      printf("Hash:%u Line %u variable name is %s @(%u, %u) isFunctionDecl: %u\n",
+      printf("Hash:%u path:%s Line %u variable name is %s @(%u, %u) isFunctionDecl: %u\n",
         src_id.getHashValue(),
+        loc.printToString(sm).c_str(),
         line,
         d->getName().str().c_str(),
         sm.getSpellingColumnNumber(d->getBeginLoc()),
@@ -119,6 +132,7 @@ public:
         d->isFunctionOrMethodVarDecl()
       );
       CommentID key = std::make_pair(src_id, line);
+      const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
       if (Dylinx::Instance().commented_locks.find(key) != Dylinx::Instance().commented_locks.end()) {
         // Variable declaration with comment mark.
         std::string cur_lock_id = "_lock_id";
@@ -137,7 +151,7 @@ public:
         lock_i++;
         (*lock_md)["LockEntity"].push_back(loc);
         Dylinx::Instance().should_header_modify[src_id] = true;
-      } else if (const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d)) {
+      } else if (!sm.isInSystemHeader(loc) && pvd) {
         // Variable declaration in function arguments list.
         Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, "BaseLock");
         Dylinx::Instance().should_header_modify[src_id] = true;
@@ -162,25 +176,6 @@ private:
   YAML::Node *lock_md;
   uint32_t lock_i = 0;
 };
-
-class SlotFuncArgumentHandler: public MatchFinder::MatchCallback {
-public:
-  SlotFuncArgumentHandler() {}
-  virtual void run(const MatchFinder::MatchResult &result) {
-    if (const DeclRefExpr *e = result.Nodes.getNodeAs<DeclRefExpr>("declRefs")) {
-      SourceManager& sm = result.Context->getSourceManager();
-      const VarDecl *d = dyn_cast<VarDecl>(e->getDecl());
-      if(d && (d->isLocalVarDecl() || d->hasGlobalStorage())) {
-        std::string lock_id = "_lock_id";
-        lock_id += std::to_string(
-          Dylinx::Instance().src2lock_id[d->getSourceRange().printToString(sm)]
-        );
-        Dylinx::Instance().rw.ReplaceText(SourceRange(e->getBeginLoc(), e->getEndLoc()), lock_id);
-      }
-    }
-  }
-};
-
 
 class SlotIdentificationConsumer : public clang::ASTConsumer {
 public:
@@ -238,15 +233,15 @@ public:
     // );
 
 
-    matcher.addMatcher(
-      callExpr(eachOf(
-        callee(functionDecl(hasName("pthread_mutex_lock"))),
-        callee(functionDecl(hasName("pthread_mutex_unlock"))),
-        callee(functionDecl(hasName("pthread_mutex_init"))),
-        callee(functionDecl(hasName("pthread_mutex_destroy")))
-      )).bind("interfaces"),
-      &handler_for_interface
-    );
+    // matcher.addMatcher(
+    //   callExpr(eachOf(
+    //     callee(functionDecl(hasName("pthread_mutex_lock"))),
+    //     callee(functionDecl(hasName("pthread_mutex_unlock"))),
+    //     callee(functionDecl(hasName("pthread_mutex_init"))),
+    //     callee(functionDecl(hasName("pthread_mutex_destroy")))
+    //   )).bind("interfaces"),
+    //   &handler_for_interface
+    // );
 
     YAML::Emitter out;
     YAML::Node node;
@@ -301,8 +296,8 @@ private:
   uint32_t mark_i = 0;
   std::ofstream yamlfout;
   MatchFinder matcher;
-  SlotFuncInterfaceHandler handler_for_interface;
-  SlotVarsHandler handler_for_vars;
+  FuncInterfaceMatchHandler handler_for_interface;
+  VarsMatchHandler handler_for_vars;
   YAML::Node lock_md;
 };
 
@@ -311,7 +306,7 @@ public:
   virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
     clang::CompilerInstance &Compiler, llvm::StringRef InFile
   ) {
-    rw.setSourceMgr(Compiler.getSourceManager(), Compiler.getLangOpts());
+    Dylinx::Instance().rw.setSourceMgr(Compiler.getSourceManager(), Compiler.getLangOpts());
     std::unique_ptr<SlotIdentificationConsumer> consumer(
       new SlotIdentificationConsumer(&Compiler.getASTContext()
     ));
@@ -330,7 +325,7 @@ public:
   void EndSourceFileAction() override {
     // Manually add the definition of BaseLock, slot_lock and
     // slot_unlock here.
-    SourceManager &sm = rw.getSourceMgr();
+    SourceManager &sm = Dylinx::Instance().rw.getSourceMgr();
     FileManager &fm = sm.getFileManager();
     std::map<FileID, bool>::iterator dep_f;
     for (
@@ -344,10 +339,10 @@ public:
       size_t dir_pos = filename.find_last_of("/");
       filename = filename.substr(dir_pos + 1, filename.length());
       if (dep_f->second) {
-        rw.InsertText(sm.getLocForStartOfFile(dep_f->first), "#include \"glue.h\"\n");
+        Dylinx::Instance().rw.InsertText(sm.getLocForStartOfFile(dep_f->first), "#include \"glue.h\"\n");
         std::error_code err;
         raw_fd_ostream fstream(processing_dir + filename, err);
-        rw.getEditBuffer(dep_f->first) .write(fstream);
+        Dylinx::Instance().rw.getEditBuffer(dep_f->first) .write(fstream);
       } else {
         fs::copy(
           getAbsolutePath(sm.getFileEntryForID(dep_f->first)->getName()),
@@ -358,7 +353,7 @@ public:
     // TODO
     // overflow security issue;
     char compile_cmd[500];
-    std::string main_file = sm.getFileEntryForID(rw.getSourceMgr().getMainFileID())->getName().str();
+    std::string main_file = sm.getFileEntryForID(Dylinx::Instance().rw.getSourceMgr().getMainFileID())->getName().str();
     size_t dir_pos = main_file.find_last_of("/");
     main_file = main_file.substr(dir_pos + 1, main_file.length());
     size_t dot_pos = main_file.find_last_of(".");
@@ -393,12 +388,12 @@ public:
       filename = processing_dir + filename;
       // std::remove(filename.c_str());
     }
-    rw.getEditBuffer(rw.getSourceMgr().getMainFileID())
+    // Print modified source code.
+    Dylinx::Instance().rw.getEditBuffer(Dylinx::Instance().rw.getSourceMgr().getMainFileID())
               .write(llvm::outs());
   }
 private:
   std::string yaml_path;
-  Rewriter rw;
   std::shared_ptr<CompilationDatabase> compiler_db;
   std::map<FileID, bool> is_req_header_modified;
 };
