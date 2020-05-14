@@ -12,11 +12,15 @@ target_end()
 target("insertion-point-inspect")
   set_default(true)
   set_kind("binary")
-  add_files("src/ast/*.cpp")
+  add_files("src/ast/insertion-point-inspect.cpp")
   set_targetdir("build/bin")
-  set_languages("cxx14", "c99")
+  set_languages("cxx17", "c99")
   set_toolchain("cxx", "/usr/local/bin/clang")
+  add_includedirs(
+    "/home/plate/doxygen/addon/doxmlparser/include"
+  )
   add_cxflags("-fno-rtti")
+  add_includedirs("/home/plate/llvm-project/clang/lib")
   add_ldflags(
     "-lclangAnalysis", "-lclangApplyReplacements", "-lclangARCMigrate", "-lclangAST",
     "-lclangASTMatchers", "-lclangBasic", "-lclangChangeNamespace", "-lclangCodeGen",
@@ -43,9 +47,10 @@ target("comment-parser")
   set_kind("binary")
   add_files("src/ast/commentparser.cpp")
   set_targetdir("build/bin")
-  set_languages("cxx14", "c99")
+  set_languages("cxx17", "c99")
   set_toolchain("cxx", "/usr/local/bin/clang")
   add_cxflags("-fno-rtti")
+  add_includedirs("include", "/home/plate/llvm-project/clang/lib")
   add_ldflags(
     "-lclangAnalysis", "-lclangApplyReplacements", "-lclangARCMigrate", "-lclangAST",
     "-lclangASTMatchers", "-lclangBasic", "-lclangChangeNamespace", "-lclangCodeGen",
@@ -59,7 +64,8 @@ target("comment-parser")
     "-lclang", "-lclangStaticAnalyzerCheckers", "-lclangStaticAnalyzerCore",
     "-lclangStaticAnalyzerFrontend", "-lclangTooling", "-lclangToolingASTDiff",
     "-lclangToolingCore", "-lclangToolingInclusions", "-lclangToolingRefactoring",
-    "-lclangToolingSyntax", "-lclangTransformer", "$(shell llvm-config --ldflags --libs --system-libs)"
+    "-lclangToolingSyntax", "-lclangTransformer", "$(shell llvm-config --ldflags --libs --system-libs)",
+    "-lyaml-cpp"
   )
 
   after_build(function (target)
