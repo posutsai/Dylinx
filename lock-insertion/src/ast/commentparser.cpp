@@ -67,7 +67,8 @@ public:
     static Dylinx dylinx;
     return dylinx;
   }
-  std::map<CommentID, bool> commented_locks;
+  std::vector<CommentID> commented_locks;
+  std::pair<FileID, uint32_t> last_altered_loc;
   Rewriter rw;
   std::map<FileID, bool> should_header_modify;
   std::map<std::string, uint32_t> src2lock_id;
@@ -118,8 +119,12 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("mallocs")) {
       SourceManager& sm = result.Context->getSourceManager();
+      // char format[50];
+      // sprintf(format, "DYLINX_LOCK_MACRO_%d", )
       Dylinx::Instance().rw.InsertTextBefore(e->getBeginLoc(), "__dylinx_ptr_init_(");
-      Dylinx::Instance().rw.InsertTextAfter(e->getEndLoc(), ")");
+      Dylinx::Instance().rw.InsertTextAfter(e->getRParenLoc().getLocWithOffset(1), ", )");
+      SourceLocation loc = dyn_cast<UnaryExprOrTypeTraitExpr>(e->getArg(0))->getBeginLoc();
+      Dylinx::Instance().rw.ReplaceText(loc.getLocWithOffset(7), 15, "AbstractLock");
     }
   }
 };
@@ -145,7 +150,12 @@ public:
       );
       CommentID key = std::make_pair(src_id, line);
       const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
-      if (Dylinx::Instance().commented_locks.find(key) != Dylinx::Instance().commented_locks.end()) {
+      std::vector<CommentID>::iterator iter = std::find(
+        Dylinx::Instance().commented_locks.begin(),
+        Dylinx::Instance().commented_locks.end(),
+        key
+      );
+      if (iter != Dylinx::Instance().commented_locks.end()) {
         // Variable declaration with comment mark.
         Dylinx::Instance().src2lock_id[d->getSourceRange().printToString(sm)] = lock_i;
         if (!strcmp(d->getType().getAsString().c_str(), "pthread_mutex_t")) {
@@ -153,9 +163,8 @@ public:
           sprintf(format, " = DYLINX_LOCK_MACRO_%d", lock_i);
           Dylinx::Instance().rw.InsertTextAfterToken(d->getEndLoc(), format);
         }
-        if (!Dylinx::Instance().commented_locks[key]) {
+        if (Dylinx::Instance().last_altered_loc != key) {
           Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, "AbstractLock");
-          Dylinx::Instance().commented_locks[key] = true;
         }
         YAML::Node loc;
         loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
@@ -165,6 +174,7 @@ public:
         lock_i++;
         Dylinx::Instance().lock_decl["LockEntity"].push_back(loc);
         Dylinx::Instance().should_header_modify[src_id] = true;
+        Dylinx::Instance().last_altered_loc = key;
       } else if (!sm.isInSystemHeader(loc) && pvd) {
         // Variable declaration in function arguments list.
         Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, "AbstractLock");
@@ -176,13 +186,15 @@ public:
         if (sm.isInSystemHeader(loc))
           return;
 
-        Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, "AbstractLock");
         Dylinx::Instance().should_header_modify[src_id] = true;
         Dylinx::Instance().src2lock_id[d->getSourceRange().printToString(sm)] = lock_i;
         if (!strcmp(d->getType().getAsString().c_str(), "pthread_mutex_t")) {
           char format[50];
           sprintf(format, " = DYLINX_LOCK_MACRO_%d", lock_i);
           Dylinx::Instance().rw.InsertTextAfterToken(d->getEndLoc(), format);
+        }
+        if (Dylinx::Instance().last_altered_loc != key) {
+          Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, "AbstractLock");
         }
         YAML::Node loc;
         loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
@@ -192,6 +204,7 @@ public:
         lock_i++;
         Dylinx::Instance().lock_decl["LockEntity"].push_back(loc);
         Dylinx::Instance().should_header_modify[src_id] = true;
+        Dylinx::Instance().last_altered_loc = key;
       }
     }
   }
@@ -289,7 +302,7 @@ public:
             uint32_t line = sm.getSpellingLineNumber(loc);
             mark["filepath"] = getAbsolutePath(sm.getFileEntryForID(src_id)->getName());
             mark["line"] = line;
-            Dylinx::Instance().commented_locks[std::make_pair(src_id, line)] = false;
+            Dylinx::Instance().commented_locks.push_back(std::make_pair(src_id, line));
             printf("key is (%s, %u)\n", mark["filepath"].as<std::string>().c_str(), mark["line"].as<uint32_t>());
             std::smatch lock_sm;
             std::string conf = conf_sm[1];
