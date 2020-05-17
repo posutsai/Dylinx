@@ -16,6 +16,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Casting.h"
 #include <iostream>
+#include <tuple>
 #include <system_error>
 #include <filesystem>
 #include <array>
@@ -60,18 +61,18 @@ namespace fs = std::filesystem;
 std::string processing_dir = ".processing/";
 
 // Consider FileID and line number combination as an unique ID.
-typedef std::pair<FileID, uint32_t> CommentID;
+typedef std::pair<FileID, uint32_t> LocID;
 class Dylinx {
 public:
   static Dylinx& Instance() {
     static Dylinx dylinx;
     return dylinx;
   }
-  std::vector<CommentID> commented_locks;
+  std::vector<LocID> commented_locks;
   std::pair<FileID, uint32_t> last_altered_loc;
   Rewriter rw;
   std::map<FileID, bool> should_header_modify;
-  std::map<std::string, uint32_t> src2lock_id;
+  std::map<std::tuple<FileID, uint32_t, std::string>, uint32_t> src2lock_id;
   std::string yaml_path;
   YAML::Node lock_decl;
 private:
@@ -117,16 +118,34 @@ class MemAllocaMatchHandler: public MatchFinder::MatchCallback {
 public:
   MemAllocaMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
-    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("mallocs")) {
+    if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("mutex_ptr_decl")) {
       SourceManager& sm = result.Context->getSourceManager();
-      // char format[50];
-      // sprintf(format, "DYLINX_LOCK_MACRO_%d", )
+      last_assigned_var = d->getName();
+      printf("var name is %s\n", last_assigned_var.c_str());
+    }
+    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("malloc2decls")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      SourceLocation loc = e->getBeginLoc();
+      uint32_t lock_id = Dylinx::Instance().src2lock_id[
+        std::make_tuple(
+          sm.getFileID(loc),
+          sm.getSpellingLineNumber(loc),
+          last_assigned_var
+        )
+      ];
+      char format[50];
+      sprintf(format, ", DYLINX_LOCK_MACRO_%d)", lock_id);
+      printf("format is %s\n", format);
       Dylinx::Instance().rw.InsertTextBefore(e->getBeginLoc(), "__dylinx_ptr_init_(");
-      Dylinx::Instance().rw.InsertTextAfter(e->getRParenLoc().getLocWithOffset(1), ", )");
-      SourceLocation loc = dyn_cast<UnaryExprOrTypeTraitExpr>(e->getArg(0))->getBeginLoc();
-      Dylinx::Instance().rw.ReplaceText(loc.getLocWithOffset(7), 15, "AbstractLock");
+      Dylinx::Instance().rw.InsertTextAfter(e->getRParenLoc().getLocWithOffset(1), format);
+      SourceLocation sizeof_begin = dyn_cast<UnaryExprOrTypeTraitExpr>(e->getArg(0))->getBeginLoc();
+      Dylinx::Instance().rw.ReplaceText(sizeof_begin.getLocWithOffset(7), 15, "AbstractLock");
+      last_assigned_var = "";
     }
   }
+private:
+  LocID processing_assignment;
+  std::string last_assigned_var;
 };
 
 class VarsMatchHandler: public MatchFinder::MatchCallback {
@@ -136,7 +155,7 @@ public:
     // Take care to the varDecl in the function argument
     if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("vars")) {
       SourceManager& sm = result.Context->getSourceManager();
-      SourceLocation loc = d->getSourceRange().getBegin();
+      SourceLocation loc = d->getBeginLoc();
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
       printf("Hash:%u path:%s Line %u variable name is %s @(%u, %u) isFunctionDecl: %u\n",
@@ -148,16 +167,22 @@ public:
         sm.getSpellingColumnNumber(d->getEndLoc()),
         d->isFunctionOrMethodVarDecl()
       );
-      CommentID key = std::make_pair(src_id, line);
+      LocID key = std::make_pair(src_id, line);
       const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
-      std::vector<CommentID>::iterator iter = std::find(
+      std::vector<LocID>::iterator iter = std::find(
         Dylinx::Instance().commented_locks.begin(),
         Dylinx::Instance().commented_locks.end(),
         key
       );
       if (iter != Dylinx::Instance().commented_locks.end()) {
         // Variable declaration with comment mark.
-        Dylinx::Instance().src2lock_id[d->getSourceRange().printToString(sm)] = lock_i;
+        Dylinx::Instance().src2lock_id[
+          std::make_tuple(
+            sm.getFileID(loc),
+            sm.getSpellingLineNumber(loc),
+            d->getName()
+          )
+        ] = lock_i;
         if (!strcmp(d->getType().getAsString().c_str(), "pthread_mutex_t")) {
           char format[50];
           sprintf(format, " = DYLINX_LOCK_MACRO_%d", lock_i);
@@ -187,7 +212,13 @@ public:
           return;
 
         Dylinx::Instance().should_header_modify[src_id] = true;
-        Dylinx::Instance().src2lock_id[d->getSourceRange().printToString(sm)] = lock_i;
+        Dylinx::Instance().src2lock_id[
+          std::make_tuple(
+            sm.getFileID(loc),
+            sm.getSpellingLineNumber(loc),
+            d->getName()
+          )
+        ] = lock_i;
         if (!strcmp(d->getType().getAsString().c_str(), "pthread_mutex_t")) {
           char format[50];
           sprintf(format, " = DYLINX_LOCK_MACRO_%d", lock_i);
@@ -261,10 +292,26 @@ public:
     //
     //! TODO Not implement yet
     matcher.addMatcher(
-      callExpr(callee(
-        functionDecl(hasName("malloc"))),
-        hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
-      )).bind("mallocs"),
+      varDecl(
+        hasType(asString("pthread_mutex_t *")),
+        hasInitializer(hasDescendant(
+          callExpr(
+            callee(functionDecl(hasName("malloc"))),
+            hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
+          )).bind("malloc2decls")
+        ))).bind("mutex_ptr_decl"),
+      &handler_for_mem_alloca
+    );
+
+    matcher.addMatcher(
+      binaryOperator(
+        hasOperatorName("="),
+        hasRHS(
+         callExpr(callee(
+          functionDecl(hasName("malloc"))),
+          hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
+        )).bind("malloc2assign"))
+      ).bind("assignment"),
       &handler_for_mem_alloca
     );
 
