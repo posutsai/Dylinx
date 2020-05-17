@@ -1,3 +1,4 @@
+#include "clang/Lex/Lexer.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Type.h"
@@ -153,6 +154,56 @@ public:
   }
 };
 
+class ArrayMatchHandler: public MatchFinder::MatchCallback {
+public:
+  ArrayMatchHandler() {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("array_decls")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      SourceLocation loc = d->getBeginLoc();
+      FileID src_id = sm.getFileID(loc);
+      uint32_t line = sm.getSpellingLineNumber(loc);
+      char size_expr[50];
+      if (const ConstantArrayType *arr_type = result.Context->getAsConstantArrayType(d->getType()))
+        sprintf(size_expr, "%lu", arr_type->getSize().getZExtValue());
+      else if (const VariableArrayType *array_type = result.Context->getAsVariableArrayType(d->getType())) {
+        SourceRange range(
+          array_type->getLBracketLoc().getLocWithOffset(1),
+          array_type->getRBracketLoc()
+        );
+        sprintf(size_expr , "%s", Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str());
+      }
+      else {
+        perror("[ERROR] runtime error!!!!\n");
+      }
+      YAML::Node alloca;
+      alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
+      alloca["line"] = line;
+      alloca["id"] = Dylinx::Instance().lock_i;
+      LocID com = std::make_pair(src_id, line);
+      std::vector<LocID>::iterator iter = std::find(
+        Dylinx::Instance().commented_locks.begin(),
+        Dylinx::Instance().commented_locks.end(),
+        com
+      );
+      if (iter != Dylinx::Instance().commented_locks.end())
+        alloca["is_commented"] = 1;
+      else
+        alloca["is_commented"] = 0;
+      char format[100];
+      sprintf(
+        format,
+        " __dylinx_array_init_(%s, %s, DYLINX_LOCK_MACRO_%d);",
+        d->getName().str().c_str(), size_expr, Dylinx::Instance().lock_i
+      );
+      printf("format is %s\n", format);
+      Dylinx::Instance().rw.InsertText(d->getEndLoc().getLocWithOffset(2), format);
+      Dylinx::Instance().lock_i++;
+      Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
+    }
+  }
+};
+
 class VarsMatchHandler: public MatchFinder::MatchCallback {
 public:
   VarsMatchHandler() {}
@@ -249,9 +300,20 @@ public:
     //    BaseLock_t *lock;
     matcher.addMatcher(
       varDecl(eachOf(
-        hasType(asString("pthread_mutex_t")), hasType(asString("pthread_mutex_t *"))
+        hasType(asString("pthread_mutex_t")),
+        hasType(asString("pthread_mutex_t *")),
+        hasType(arrayType(hasElementType(qualType(asString("pthread_mutex_t *")))))
       )).bind("vars"),
       &handler_for_vars
+    );
+
+    // Match all
+    //    pthread_mutex_t locks[NUM_LOCK];
+    // and convert them to
+    //    pthread_mutex_t locks[NUM_LOCK]; __dylinx_array_init_(locks, NUM_LOCK, DYLINX_LOCK_MACRO);
+    matcher.addMatcher(
+      varDecl(hasType(arrayType(hasElementType(qualType(asString("pthread_mutex_t")))))).bind("array_decls"),
+      &handler_for_array
     );
 
     // Match all
@@ -271,7 +333,9 @@ public:
     // );
 
     // Match all
-    //    malloc(sizeof(pthread_mutex_t));
+    //    pthread_mutex_t *lock malloc(sizeof(pthread_mutex_t));
+    //    pthread_mutex_t *lock;
+    //    lock = malloc(sizeof(pthread_mutex_t));
     // and convert them to
     //    __dylinx_ptr_init(malloc(sizeof(pthread_mutex_t)));
     // ! Note:
@@ -372,6 +436,7 @@ private:
   FuncInterfaceMatchHandler handler_for_interface;
   VarsMatchHandler handler_for_vars;
   MemAllocaMatchHandler handler_for_mem_alloca;
+  ArrayMatchHandler handler_for_array;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
