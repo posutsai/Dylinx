@@ -118,35 +118,38 @@ class MemAllocaMatchHandler: public MatchFinder::MatchCallback {
 public:
   MemAllocaMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
-    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("malloc2decls")) {
-      SourceManager& sm = result.Context->getSourceManager();
-      SourceLocation loc = e->getBeginLoc();
-      FileID src_id = sm.getFileID(loc);
-      uint32_t line = sm.getSpellingLineNumber(loc);
-      YAML::Node alloca;
-      alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
-      alloca["line"] = line;
-      alloca["id"] = Dylinx::Instance().lock_i;
-      LocID com = std::make_pair(src_id, line);
-      std::vector<LocID>::iterator iter = std::find(
-        Dylinx::Instance().commented_locks.begin(),
-        Dylinx::Instance().commented_locks.end(),
-        com
-      );
-      if (iter != Dylinx::Instance().commented_locks.end())
-        alloca["is_commented"] = 1;
-      else
-        alloca["is_commented"] = 0;
-      char format[50];
-      sprintf(format, ", DYLINX_LOCK_MACRO_%d)", Dylinx::Instance().lock_i);
-      printf("format is %s\n", format);
-      Dylinx::Instance().rw.InsertTextBefore(e->getBeginLoc(), "__dylinx_ptr_init_(");
-      Dylinx::Instance().rw.InsertTextAfter(e->getRParenLoc().getLocWithOffset(1), format);
-      SourceLocation sizeof_begin = dyn_cast<UnaryExprOrTypeTraitExpr>(e->getArg(0))->getBeginLoc();
-      Dylinx::Instance().rw.ReplaceText(sizeof_begin.getLocWithOffset(7), 15, "AbstractLock");
-      Dylinx::Instance().lock_i++;
-      Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
-    }
+    const CallExpr *decl_expr = result.Nodes.getNodeAs<CallExpr>("malloc2decls");
+    const CallExpr *assign_expr = result.Nodes.getNodeAs<CallExpr>("malloc2assign");
+    const CallExpr *e = decl_expr? decl_expr: assign_expr;
+    if(!e)
+      return;
+    SourceManager& sm = result.Context->getSourceManager();
+    SourceLocation loc = e->getBeginLoc();
+    FileID src_id = sm.getFileID(loc);
+    uint32_t line = sm.getSpellingLineNumber(loc);
+    YAML::Node alloca;
+    alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
+    alloca["line"] = line;
+    alloca["id"] = Dylinx::Instance().lock_i;
+    LocID com = std::make_pair(src_id, line);
+    std::vector<LocID>::iterator iter = std::find(
+      Dylinx::Instance().commented_locks.begin(),
+      Dylinx::Instance().commented_locks.end(),
+      com
+    );
+    if (iter != Dylinx::Instance().commented_locks.end())
+      alloca["is_commented"] = 1;
+    else
+      alloca["is_commented"] = 0;
+    char format[50];
+    sprintf(format, ", DYLINX_LOCK_MACRO_%d)", Dylinx::Instance().lock_i);
+    printf("format is %s\n", format);
+    Dylinx::Instance().rw.InsertTextBefore(e->getBeginLoc(), "__dylinx_ptr_init_(");
+    Dylinx::Instance().rw.InsertTextAfter(e->getRParenLoc().getLocWithOffset(1), format);
+    SourceLocation sizeof_begin = dyn_cast<UnaryExprOrTypeTraitExpr>(e->getArg(0))->getBeginLoc();
+    Dylinx::Instance().rw.ReplaceText(sizeof_begin.getLocWithOffset(7), 15, "AbstractLock");
+    Dylinx::Instance().lock_i++;
+    Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
   }
 };
 
@@ -293,11 +296,11 @@ public:
     matcher.addMatcher(
       binaryOperator(
         hasOperatorName("="),
-        hasRHS(
+        hasRHS(hasDescendant(
          callExpr(callee(
           functionDecl(hasName("malloc"))),
           hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
-        )).bind("malloc2assign"))
+        )).bind("malloc2assign")))
       ).bind("assignment"),
       &handler_for_mem_alloca
     );
