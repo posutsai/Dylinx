@@ -72,9 +72,9 @@ public:
   std::pair<FileID, uint32_t> last_altered_loc;
   Rewriter rw;
   std::map<FileID, bool> should_header_modify;
-  std::map<std::tuple<FileID, uint32_t, std::string>, uint32_t> src2lock_id;
   std::string yaml_path;
   YAML::Node lock_decl;
+  uint32_t lock_i = 0;
 private:
   Dylinx() {};
   ~Dylinx() {};
@@ -118,34 +118,36 @@ class MemAllocaMatchHandler: public MatchFinder::MatchCallback {
 public:
   MemAllocaMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
-    if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("mutex_ptr_decl")) {
-      SourceManager& sm = result.Context->getSourceManager();
-      last_assigned_var = d->getName();
-      printf("var name is %s\n", last_assigned_var.c_str());
-    }
     if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("malloc2decls")) {
       SourceManager& sm = result.Context->getSourceManager();
       SourceLocation loc = e->getBeginLoc();
-      uint32_t lock_id = Dylinx::Instance().src2lock_id[
-        std::make_tuple(
-          sm.getFileID(loc),
-          sm.getSpellingLineNumber(loc),
-          last_assigned_var
-        )
-      ];
+      FileID src_id = sm.getFileID(loc);
+      uint32_t line = sm.getSpellingLineNumber(loc);
+      YAML::Node alloca;
+      alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
+      alloca["line"] = line;
+      alloca["id"] = Dylinx::Instance().lock_i;
+      LocID com = std::make_pair(src_id, line);
+      std::vector<LocID>::iterator iter = std::find(
+        Dylinx::Instance().commented_locks.begin(),
+        Dylinx::Instance().commented_locks.end(),
+        com
+      );
+      if (iter != Dylinx::Instance().commented_locks.end())
+        alloca["is_commented"] = 1;
+      else
+        alloca["is_commented"] = 0;
       char format[50];
-      sprintf(format, ", DYLINX_LOCK_MACRO_%d)", lock_id);
+      sprintf(format, ", DYLINX_LOCK_MACRO_%d)", Dylinx::Instance().lock_i);
       printf("format is %s\n", format);
       Dylinx::Instance().rw.InsertTextBefore(e->getBeginLoc(), "__dylinx_ptr_init_(");
       Dylinx::Instance().rw.InsertTextAfter(e->getRParenLoc().getLocWithOffset(1), format);
       SourceLocation sizeof_begin = dyn_cast<UnaryExprOrTypeTraitExpr>(e->getArg(0))->getBeginLoc();
       Dylinx::Instance().rw.ReplaceText(sizeof_begin.getLocWithOffset(7), 15, "AbstractLock");
-      last_assigned_var = "";
+      Dylinx::Instance().lock_i++;
+      Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
     }
   }
-private:
-  LocID processing_assignment;
-  std::string last_assigned_var;
 };
 
 class VarsMatchHandler: public MatchFinder::MatchCallback {
@@ -174,30 +176,24 @@ public:
         Dylinx::Instance().commented_locks.end(),
         key
       );
+
       if (iter != Dylinx::Instance().commented_locks.end()) {
         // Variable declaration with comment mark.
-        Dylinx::Instance().src2lock_id[
-          std::make_tuple(
-            sm.getFileID(loc),
-            sm.getSpellingLineNumber(loc),
-            d->getName()
-          )
-        ] = lock_i;
         if (!strcmp(d->getType().getAsString().c_str(), "pthread_mutex_t")) {
           char format[50];
-          sprintf(format, " = DYLINX_LOCK_MACRO_%d", lock_i);
+          sprintf(format, " = DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
           Dylinx::Instance().rw.InsertTextAfterToken(d->getEndLoc(), format);
+          YAML::Node loc;
+          loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
+          loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
+          loc["id"] = Dylinx::Instance().lock_i;
+          loc["is_commented"] = 1;
+          Dylinx::Instance().lock_i++;
+          Dylinx::Instance().lock_decl["LockEntity"].push_back(loc);
         }
         if (Dylinx::Instance().last_altered_loc != key) {
           Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, "AbstractLock");
         }
-        YAML::Node loc;
-        loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
-        loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
-        loc["id"] = lock_i;
-        loc["is_commented"] = 1;
-        lock_i++;
-        Dylinx::Instance().lock_decl["LockEntity"].push_back(loc);
         Dylinx::Instance().should_header_modify[src_id] = true;
         Dylinx::Instance().last_altered_loc = key;
       } else if (!sm.isInSystemHeader(loc) && pvd) {
@@ -212,35 +208,26 @@ public:
           return;
 
         Dylinx::Instance().should_header_modify[src_id] = true;
-        Dylinx::Instance().src2lock_id[
-          std::make_tuple(
-            sm.getFileID(loc),
-            sm.getSpellingLineNumber(loc),
-            d->getName()
-          )
-        ] = lock_i;
         if (!strcmp(d->getType().getAsString().c_str(), "pthread_mutex_t")) {
           char format[50];
-          sprintf(format, " = DYLINX_LOCK_MACRO_%d", lock_i);
+          sprintf(format, " = DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
           Dylinx::Instance().rw.InsertTextAfterToken(d->getEndLoc(), format);
+          YAML::Node loc;
+          loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
+          loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
+          loc["id"] = Dylinx::Instance().lock_i;
+          loc["is_commented"] = 0;
+          Dylinx::Instance().lock_i++;
+          Dylinx::Instance().lock_decl["LockEntity"].push_back(loc);
         }
         if (Dylinx::Instance().last_altered_loc != key) {
           Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, "AbstractLock");
         }
-        YAML::Node loc;
-        loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
-        loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
-        loc["id"] = lock_i;
-        loc["is_commented"] = 0;
-        lock_i++;
-        Dylinx::Instance().lock_decl["LockEntity"].push_back(loc);
         Dylinx::Instance().should_header_modify[src_id] = true;
         Dylinx::Instance().last_altered_loc = key;
       }
     }
   }
-private:
-  uint32_t lock_i = 0;
 };
 
 class SlotIdentificationConsumer : public clang::ASTConsumer {
