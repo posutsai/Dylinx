@@ -69,12 +69,12 @@ int dylinx_lock_destroy(void *lock) {
 )(entity)
 
 #define __dylinx_generic_disable_(entity) _Generic((entity),                \
-  pthread_mutex_t: pthread_mutex_unlock,                                    \
+  pthread_mutex_t *: pthread_mutex_unlock,                                  \
   default: dylinx_lock_disable                                              \
 )(entity)
 
 #define __dylinx_generic_destroy_(entity) _Generic((entity),                \
-  pthread_mutex_t: pthread_mutex_destroy,                                   \
+  pthread_mutex_t *: pthread_mutex_destroy,                                 \
   default: dylinx_lock_destroy                                              \
 )(entity)
 
