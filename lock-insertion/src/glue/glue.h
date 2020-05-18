@@ -1,10 +1,10 @@
-#include <cstdint>
+#include <stdint.h>
+#include <string.h>
 #include <pthread.h>
-#include <cstdio>
-#include <typeinfo>
+#include <stdio.h>
 #include <assert.h>
 
-#include "runtime-config.h"
+// #include "runtime-config.h"
 // Include all of the lock definition in lock directory.
 #include "lock/TTASLock.h"
 // #include "lock/MutexLock.h"
@@ -12,66 +12,70 @@
 #ifndef __DYLINX_GLUE__
 #define __DYLINX_GLUE__
 
-#ifndef LOCKTYPE_CNT
-static_assert(0, "LOCKTYPE_CNT is one of required macro");
-#endif
-
-
-enum lock_type {
-  Ttas, Mutex, Ttas_ls, Spinlock
-};
-
-typedef struct AbstractLock {
-  enum lock_type;
-  int32_t id;
-  // the value here can only be assigned in initializer and it
-  // is NULL while contructing.
-  void *block;
-} AbstractLock_t;
-
 typedef int (*initializer_fn)(void *, pthread_mutexattr_t *);
-static initializer_fn initializers[] {
-  ttas_init,
-  mutex_init,
-  ttas_ls_init,
-  spinlock_init
-};
-
-typedef int (*locker_fn)(void *, int);
-static locker_fn lockers[] {
-  ttas_lock,
-  mutex_lock,
-  ttas_ls_lock,
-  spinlock_lock
-};
-
-typedef int (*unlocker_fn)(void *, int);
-static locker_fn unlockers[] {
-  ttas_unlock,
-  mutex_unlock,
-  ttas_ls_unlock,
-  spinlock_unlock
-};
-
+typedef int (*locker_fn)(void *);
+typedef int (*unlocker_fn)(void *);
 typedef int (*destroyer_fn)(void *);
-static destroyer_fn destroyers[] {
-  ttas_destroy,
-  mutex_destroy,
-  ttas_ls_destroy,
-  spinlock_destroy
-};
 
-int __dylinx_slot_init(AbstractLock_t *ablock, const pthread_mutexattr_t *attr) {
-  return initializers[ablock->lock_type](ablock->block, attr);
-}
-int __dylinx_slot_lock(AbstractLock_t *ablock, int lock_id) {
-  return lockers[ablock->lock_type](ablock->block, lock_id);
-}
-int __dylinx_slot_unlock(AbstractLock *ablock, int lock_id) {
-  return unlockers[ablock->lock_type](ablock->block, lock_id);
-}
-int __dylinx_slot_destroy(AbstractLock *ablock) {
-  return destroyers[ablock->lock_type](ablock->block);
+typedef struct GenericInterface {
+  ttas_lock_t *entity;
+  initializer_fn lock_init;
+  locker_fn lock_enable;
+  unlocker_fn lock_disable;
+  destroyer_fn lock_destroy;
+  char padding[sizeof(pthread_mutex_t) - sizeof(initializer_fn) * 4];
+  uint32_t type;
+} generic_interface_t;
+
+typedef union DylinxTTASLock {
+  pthread_mutex_t dummy_lock;
+  generic_interface_t interface;
+} dylinx_ttaslock_t;
+
+int dylinx_ttaslock_init(dylinx_ttaslock_t *lock, pthread_mutexattr_t *attr) {
+  memset(lock, 0, sizeof(generic_interface_t));
+  lock->interface.lock_init = ttas_init;
+  lock->interface.lock_enable = ttas_lock;
+  lock->interface.lock_disable = ttas_unlock;
+  lock->interface.lock_destroy = ttas_destroy;
+  lock->interface.type = 1;
+  return lock->interface.lock_init((void *)lock->interface.entity, attr);
 }
 
-#endif
+int dylinx_ttaslock_enable(dylinx_ttaslock_t *lock) {
+  if (!lock->interface.type)
+    dylinx_ttaslock_init(lock, NULL);
+  return lock->interface.lock_enable((void *)lock->interface.entity);
+}
+
+int dylinx_lock_disable(void *lock) {
+  generic_interface_t *gen_lock = lock;
+  return gen_lock->lock_disable((void *)gen_lock->entity);
+}
+
+int dylinx_lock_destroy(void *lock) {
+  generic_interface_t *gen_lock = lock;
+  return gen_lock->lock_destroy((void *)gen_lock->entity);
+}
+
+#define __dylinx_generic_init_(entity, attr) _Generic((entity),             \
+  pthread_mutex_t *: pthread_mutex_init,                                    \
+  dylinx_ttaslock_t *: dylinx_ttaslock_init                                 \
+)(entity, attr)
+
+#define __dylinx_generic_enable_(entity) _Generic((entity),                 \
+  pthread_mutex_t *: pthread_mutex_lock,                                    \
+  dylinx_ttaslock_t *: dylinx_ttaslock_enable                               \
+)(entity)
+
+#define __dylinx_generic_disable_(entity) _Generic((entity),                \
+  pthread_mutex_t: pthread_mutex_unlock,                                    \
+  default: dylinx_lock_disable                                              \
+)(entity)
+
+#define __dylinx_generic_destroy_(entity) _Generic((entity),                \
+  pthread_mutex_t: pthread_mutex_destroy,                                   \
+  default: dylinx_lock_destroy                                              \
+)(entity)
+
+#endif // __DYLINX_GLUE__
