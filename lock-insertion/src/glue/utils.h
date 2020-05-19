@@ -7,6 +7,11 @@
 #define UNLOCKED 1
 #define CPU_PAUSE() asm volatile("pause\n" : : : "memory")
 
+typedef int (*initializer_fn)(void *, pthread_mutexattr_t *);
+typedef int (*locker_fn)(void *);
+typedef int (*unlocker_fn)(void *);
+typedef int (*destroyer_fn)(void *);
+
 inline void *alloc_cache_align(size_t n) {
   void *res = 0;
   if ((MEMALIGN(&res, L_CACHE_LINE_SIZE, cache_align(n)) < 0) || !res) {
@@ -33,6 +38,37 @@ static inline uint8_t tas_uint8(volatile uint8_t *addr) {
   return (uint8_t)oldval;
 }
 
+typedef struct GenericInterface {
+  void *entity;
+  initializer_fn lock_init;
+  locker_fn lock_enable;
+  unlocker_fn lock_disable;
+  destroyer_fn lock_destroy;
+  char padding[sizeof(pthread_mutex_t) - sizeof(initializer_fn) * 4];
+  uint32_t is_pthread;
+} generic_interface_t;
+
 #define COMPILER_BARRIER() asm volatile("" : : : "memory")
+#define DYLINX_INIT_LOCK(type)                                                                                \
+typedef union {                                                                                               \
+  pthread_mutex_t dummy_lock;                                                                                 \
+  generic_interface_t interface;                                                                              \
+} dylinx_ ## type ## lock_t;                                                                                  \
+                                                                                                              \
+int dylinx_ ## type ## lock_init(dylinx_ ## type ## lock_t *lock, pthread_mutexattr_t *attr) {                \
+  memset(lock, 0, sizeof(generic_interface_t));                                                               \
+  lock->interface.lock_init = type ## _init;                                                                  \
+  lock->interface.lock_enable = type ## _lock;                                                                \
+  lock->interface.lock_disable = type ## _unlock;                                                             \
+  lock->interface.lock_destroy = type ## _destroy;                                                            \
+  lock->interface.is_pthread = 1;                                                                             \
+  return lock->interface.lock_init(lock->interface.entity, attr);                                             \
+}                                                                                                             \
+                                                                                                              \
+int dylinx_ ## type ## lock_enable(dylinx_ ## type ## lock_t *lock) {                                         \
+  if (!lock->interface.is_pthread)                                                                            \
+    dylinx_ ## type ## lock_init(lock, NULL);                                                                 \
+  return lock->interface.lock_enable(lock->interface.entity);                                                 \
+}
 
 #endif

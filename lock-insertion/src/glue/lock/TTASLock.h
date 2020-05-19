@@ -8,7 +8,6 @@ typedef struct ttas_lock {
   volatile uint8_t spin_lock __attribute__((aligned(L_CACHE_LINE_SIZE)));
   char __pad[pad_to_cache_line(sizeof(uint8_t))];
 } ttas_lock_t __attribute__((aligned(L_CACHE_LINE_SIZE)));
-
 // Paper:
 // The Performance of Spin Lock Alternatives for Shared-Memory Multiprocessors
 // ---------------------------------------------------------------------------
@@ -35,4 +34,6 @@ int ttas_destroy(void *entity) {
   printf("TTAS lock destroy !!!!\n");
   return 1;
 }
+DYLINX_INIT_LOCK(ttas);
+
 #endif
