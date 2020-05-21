@@ -48,10 +48,10 @@ int indirect_pthread_mutex_destroy(void *mtx) {
 
 static struct Methods4Lock id2methods_table[LOCK_TYPE_CNT] = {
   {
-    indirect_pthread_mutex_init,
-    indirect_pthread_mutex_lock,
-    indirect_pthread_mutex_unlock,
-    indirect_pthread_mutex_destroy
+    pthread_mutex_init,
+    pthread_mutex_lock,
+    pthread_mutex_unlock,
+    pthread_mutex_destroy
   }
 };
 
@@ -121,17 +121,17 @@ int dylinx_pthreadmtx_enable(pthread_mutex_t *lock) {
 
 #define __dylinx_generic_enable_(entity) _Generic((entity),                 \
   pthread_mutex_t *: dylinx_pthreadmtx_enable,                              \
-  dylinx_ttaslock_t *: dylinx_ttaslock_enable                               \
+  dylinx_ttaslock_t *: dylinx_ttaslock_enable,                              \
   entity_with_type_t: dylinx_retrievetype_enable                            \
 )(entity)
 
 #define __dylinx_generic_disable_(entity) _Generic((entity),                \
-  entity_with_type_t: pthread_mutex_unlock,                                  \
+  entity_with_type_t: pthread_mutex_unlock,                                 \
   default: dylinx_lock_disable                                              \
 )(entity)
 
 #define __dylinx_generic_destroy_(entity) _Generic((entity),                \
-  entity_with_type_t: pthread_mutex_destroy,                                 \
+  entity_with_type_t: pthread_mutex_destroy,                                \
   default: dylinx_lock_destroy                                              \
 )(entity)
 

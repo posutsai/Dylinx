@@ -54,34 +54,34 @@ typedef struct EntityWithType {
 } entity_with_type_t;
 
 #define COMPILER_BARRIER() asm volatile("" : : : "memory")
-#define DYLINX_INIT_LOCK(ltype, num)                                                                           \
+#define DYLINX_INIT_LOCK(ltype, num)                                                                          \
 typedef union {                                                                                               \
   pthread_mutex_t dummy_lock;                                                                                 \
   generic_interface_t interface;                                                                              \
-} dylinx_ ## ltype ## lock_t;                                                                                  \
+} dylinx_ ## ltype ## lock_t;                                                                                 \
                                                                                                               \
-int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mutexattr_t *attr) {                \
+int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mutexattr_t *attr) {              \
   memset(lock, 0, sizeof(generic_interface_t));                                                               \
-  lock->interface.lock_init = ltype ## _init;                                                                  \
-  lock->interface.lock_enable = ltype ## _lock;                                                                \
-  lock->interface.lock_disable = ltype ## _unlock;                                                             \
-  lock->interface.lock_destroy = ltype ## _destroy;                                                            \
+  lock->interface.lock_init = ltype ## _init;                                                                 \
+  lock->interface.lock_enable = ltype ## _lock;                                                               \
+  lock->interface.lock_disable = ltype ## _unlock;                                                            \
+  lock->interface.lock_destroy = ltype ## _destroy;                                                           \
   lock->interface.isnt_pthread = 1;                                                                           \
   return lock->interface.lock_init(lock->interface.entity, attr);                                             \
 }                                                                                                             \
                                                                                                               \
-int dylinx_ ## ltype ## lock_enable(dylinx_ ## ltype ## lock_t *lock) {                                         \
+int dylinx_ ## ltype ## lock_enable(dylinx_ ## ltype ## lock_t *lock) {                                       \
   if (!lock->interface.isnt_pthread)                                                                          \
-    dylinx_ ## ltype ## lock_init(lock, NULL);                                                                 \
+    dylinx_ ## ltype ## lock_init(lock, NULL);                                                                \
   return lock->interface.lock_enable(lock->interface.entity);                                                 \
 }                                                                                                             \
                                                                                                               \
-static dylinx_## ltype ## lock_t __dylinx_ ## ltype ## lock_instance;                                           \
-static uint32_t __dylinx_ ## ltype ## _ID = num;                                                               \
+static dylinx_## ltype ## lock_t __dylinx_ ## ltype ## lock_instance;                                         \
+static uint32_t __dylinx_ ## ltype ## _ID = num;                                                              \
                                                                                                               \
-entity_with_type_t dylinx_ ## ltype ## lock_gettype(dylinx_ ## ltype ## lock_t *lock) {                         \
+entity_with_type_t dylinx_ ## ltype ## lock_gettype(dylinx_ ## ltype ## lock_t *lock) {                       \
   entity_with_type_t l = {                                                                                    \
-    .mtx_type = __dylinx_ ## ltype ## _ID,                                                                     \
+    .mtx_type = __dylinx_ ## ltype ## _ID,                                                                    \
     .entity = (void *)lock                                                                                    \
   };                                                                                                          \
   return l;                                                                                                   \
