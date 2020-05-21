@@ -97,10 +97,10 @@ public:
   }
 private:
   std::map<std::string, std::string>interface_LUT = {
-    {"pthread_mutex_init", "___dylinx_init_"},
-    {"pthread_mutex_lock", "___dylinx_lock_"},
-    {"pthread_mutex_unlock", "___dylinx_unlock_"},
-    {"pthread_mutex_destroy", "___dylinx_destroy_"}
+    {"pthread_mutex_init", "__dylinx_generic_init_"},
+    {"pthread_mutex_lock", "__dylinx_generic_enable_"},
+    {"pthread_mutex_unlock", "__dylinx_generic_disable_"},
+    {"pthread_mutex_destroy", "__dylinx_generic_destroy_"}
   };
 };
 
@@ -138,18 +138,9 @@ public:
       Dylinx::Instance().commented_locks.end(),
       com
     );
-    if (iter != Dylinx::Instance().commented_locks.end())
-      alloca["is_commented"] = 1;
-    else
-      alloca["is_commented"] = 0;
-    char format[50];
-    sprintf(format, ", DYLINX_LOCK_MACRO_%d)", Dylinx::Instance().lock_i);
-    printf("format is %s\n", format);
-    Dylinx::Instance().rw.InsertTextBefore(e->getBeginLoc(), "__dylinx_ptr_init_(");
-    Dylinx::Instance().rw.InsertTextAfter(e->getRParenLoc().getLocWithOffset(1), format);
+    alloca["is_commented"] = iter == Dylinx::Instance().commented_locks.end()? 0: 1;
     SourceLocation sizeof_begin = dyn_cast<UnaryExprOrTypeTraitExpr>(e->getArg(0))->getBeginLoc();
-    Dylinx::Instance().rw.ReplaceText(sizeof_begin.getLocWithOffset(7), 15, "AbstractLock");
-    Dylinx::Instance().lock_i++;
+    Dylinx::Instance().rw.ReplaceText(sizeof_begin.getLocWithOffset(7), 15, "generic_interface_t");
     Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
   }
 };
@@ -163,19 +154,6 @@ public:
       SourceLocation loc = d->getBeginLoc();
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
-      char size_expr[50];
-      if (const ConstantArrayType *arr_type = result.Context->getAsConstantArrayType(d->getType()))
-        sprintf(size_expr, "%lu", arr_type->getSize().getZExtValue());
-      else if (const VariableArrayType *array_type = result.Context->getAsVariableArrayType(d->getType())) {
-        SourceRange range(
-          array_type->getLBracketLoc().getLocWithOffset(1),
-          array_type->getRBracketLoc()
-        );
-        sprintf(size_expr , "%s", Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str());
-      }
-      else {
-        perror("[ERROR] runtime error!!!!\n");
-      }
       YAML::Node alloca;
       alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
       alloca["line"] = line;
@@ -186,20 +164,28 @@ public:
         Dylinx::Instance().commented_locks.end(),
         com
       );
-      if (iter != Dylinx::Instance().commented_locks.end())
-        alloca["is_commented"] = 1;
-      else
-        alloca["is_commented"] = 0;
-      char format[100];
-      sprintf(
-        format,
-        " __dylinx_array_init_(%s, %s, DYLINX_LOCK_MACRO_%d);",
-        d->getName().str().c_str(), size_expr, Dylinx::Instance().lock_i
-      );
-      printf("format is %s\n", format);
-      Dylinx::Instance().rw.InsertText(d->getEndLoc().getLocWithOffset(2), format);
+      alloca["is_commented"] =  iter == Dylinx::Instance().commented_locks.end()? 0: 1;
+      char format[50];
+      sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
+      if (d->getStorageClass() == StorageClass::SC_Static) {
+        loc = Lexer::findNextToken(loc, sm, result.Context->getLangOpts())->getLocation();
+        Dylinx::Instance().rw.ReplaceText(loc, 15, format);
+      } else
+        Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, format);
       Dylinx::Instance().lock_i++;
       Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
+    }
+  }
+};
+
+class TypedefMatchHandler: public MatchFinder::MatchCallback {
+public:
+  TypedefMatchHandler() {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const TypedefNameDecl *d = result.Nodes.getNodeAs<TypedefNameDecl>("typedefs")) {
+      //! config from config.yml
+      printf("!!!! typedef %s\n", d->getNameAsString().c_str());
+
     }
   }
 };
@@ -212,6 +198,8 @@ public:
     if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("vars")) {
       SourceManager& sm = result.Context->getSourceManager();
       SourceLocation loc = d->getBeginLoc();
+      if (sm.isInSystemHeader(loc))
+        return;
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
       printf("Hash:%u path:%s Line %u variable name is %s @(%u, %u) isFunctionDecl: %u\n",
@@ -224,62 +212,39 @@ public:
         d->isFunctionOrMethodVarDecl()
       );
       LocID key = std::make_pair(src_id, line);
-      const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
       std::vector<LocID>::iterator iter = std::find(
         Dylinx::Instance().commented_locks.begin(),
         Dylinx::Instance().commented_locks.end(),
         key
       );
-
-      if (iter != Dylinx::Instance().commented_locks.end()) {
-        // Variable declaration with comment mark.
-        if (!strcmp(d->getType().getAsString().c_str(), "pthread_mutex_t")) {
-          char format[50];
-          sprintf(format, " = DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
-          Dylinx::Instance().rw.InsertTextAfterToken(d->getEndLoc(), format);
-          YAML::Node loc;
-          loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
-          loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
-          loc["id"] = Dylinx::Instance().lock_i;
-          loc["is_commented"] = 1;
-          Dylinx::Instance().lock_i++;
-          Dylinx::Instance().lock_decl["LockEntity"].push_back(loc);
+      const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
+      if (pvd) {
+        Dylinx::Instance().rw.ReplaceText(pvd->getBeginLoc(), 15, "entity_with_type_t");
+      } else if (Dylinx::Instance().last_altered_loc != key) {
+        char format[50];
+        sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
+        if (d->getStorageClass() == StorageClass::SC_Static) {
+          SourceLocation loc = Lexer::findNextToken(
+            d->getBeginLoc(),
+            sm,
+            result.Context->getLangOpts()
+          )->getLocation();
+          printf("find static vardecl %s %s!!!\n", d->getName().str().c_str(), format);
+          Dylinx::Instance().rw.ReplaceText(loc, 15, format);
         }
-        if (Dylinx::Instance().last_altered_loc != key) {
-          Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, "AbstractLock");
-        }
+        else
+          Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, format);
+        YAML::Node decl_loc;
+        decl_loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
+        decl_loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
+        decl_loc["id"] = Dylinx::Instance().lock_i;
+        decl_loc["is_commented"] = iter == Dylinx::Instance().commented_locks.end()? 0: 1;
+        Dylinx::Instance().lock_i++;
+        Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
         Dylinx::Instance().should_header_modify[src_id] = true;
         Dylinx::Instance().last_altered_loc = key;
-      } else if (!sm.isInSystemHeader(loc) && pvd) {
-        // Variable declaration in function arguments list.
-        Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, "AbstractLock");
-        Dylinx::Instance().should_header_modify[src_id] = true;
-      } else {
-        // Commentless lock declaration.
-
-        // Prevent pthread_mutex_t variable declaration in system header
-        if (sm.isInSystemHeader(loc))
-          return;
-
-        Dylinx::Instance().should_header_modify[src_id] = true;
-        if (!strcmp(d->getType().getAsString().c_str(), "pthread_mutex_t")) {
-          char format[50];
-          sprintf(format, " = DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
-          Dylinx::Instance().rw.InsertTextAfterToken(d->getEndLoc(), format);
-          YAML::Node loc;
-          loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
-          loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
-          loc["id"] = Dylinx::Instance().lock_i;
-          loc["is_commented"] = 0;
-          Dylinx::Instance().lock_i++;
-          Dylinx::Instance().lock_decl["LockEntity"].push_back(loc);
-        }
-        if (Dylinx::Instance().last_altered_loc != key) {
-          Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, "AbstractLock");
-        }
-        Dylinx::Instance().should_header_modify[src_id] = true;
-        Dylinx::Instance().last_altered_loc = key;
-      }
+      } else
+        return;
     }
   }
 };
@@ -324,13 +289,13 @@ public:
     //    typedef BaseLock *MyLock
 
     //! TODO Not implement yet
-    // matcher.addMatcher(
-    //   typedefNameDecl(eachOf(
-    //     hasType(asString("pthread_mutex_t")),
-    //     hasType(asString("pthread_mutex_t *"))
-    //   )).bind("typedefs")
-    //   &handler_for_typedef
-    // );
+    matcher.addMatcher(
+      typedefNameDecl(eachOf(
+        hasType(asString("pthread_mutex_t")),
+        hasType(asString("pthread_mutex_t *"))
+      )).bind("typedefs"),
+      &handler_for_typedef
+    );
 
     // Match all
     //    pthread_mutex_t *lock malloc(sizeof(pthread_mutex_t));
@@ -437,6 +402,7 @@ private:
   VarsMatchHandler handler_for_vars;
   MemAllocaMatchHandler handler_for_mem_alloca;
   ArrayMatchHandler handler_for_array;
+  TypedefMatchHandler handler_for_typedef;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
