@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <string>
+#include <cstring>
 #include <regex>
 #include <utility>
 #include "yaml-cpp/yaml.h"
@@ -190,6 +191,59 @@ public:
   }
 };
 
+class PtrRefMatchHandler: public MatchFinder::MatchCallback {
+public:
+  PtrRefMatchHandler() {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("ptr_ref")) {
+      //! config from config.yml
+      SourceManager& sm = result.Context->getSourceManager();
+      std::string func_name = e->getDirectCallee()->getNameInfo().getName().getAsString();
+      std::vector<std::string>::iterator iter = std::find(
+          interfaces.begin(), interfaces.end(), func_name
+      );
+      if (iter != interfaces.end())
+        return;
+      for (int i = 0; i < e->getNumArgs(); i++) {
+        printf("i == %d\n",i);
+        const Expr *arg = e->getArg(i);
+        SourceLocation begin = arg->getBeginLoc();
+        SourceLocation end;
+        if (i == e->getNumArgs() -1)
+          end = e->getRParenLoc();
+        else {
+          end = e->getArg(i+1)->getBeginLoc();
+          CharSourceRange src_rng;
+          src_rng.setBegin(begin);
+          src_rng.setEnd(end);
+          std::string with_comma = Lexer::getSourceText(src_rng, sm, result.Context->getLangOpts()).str();
+          size_t found = with_comma.find_last_of(",");
+          std::string without_comma = with_comma.substr(0, found).c_str();
+          end = begin.getLocWithOffset(without_comma.length());
+        }
+        printf("%s !!!! type[%d] is  %s (%u, %u, %u)\n",
+          e->getDirectCallee()->getNameInfo().getName().getAsString().c_str(), i,
+          arg->getType().getAsString().c_str(),
+          sm.getSpellingColumnNumber(arg->getBeginLoc()),
+          sm.getSpellingColumnNumber(arg->getEndLoc()),
+          sm.getSpellingColumnNumber(arg->getExprLoc())
+        );
+        if (!strcmp(arg->getType().getAsString().c_str(), "pthread_mutex_t *")) {
+          Dylinx::Instance().rw.InsertTextBefore(begin, "__dylinx_generic_get_type_(");
+          Dylinx::Instance().rw.InsertTextAfter(end, ")");
+        }
+      }
+    }
+  }
+private:
+  std::vector<std::string> interfaces = {
+    "pthread_mutex_init",
+    "pthread_mutex_lock",
+    "pthread_mutex_unlock",
+    "pthread_mutex_destroy"
+  };
+};
+
 class VarsMatchHandler: public MatchFinder::MatchCallback {
 public:
   VarsMatchHandler() {}
@@ -345,6 +399,13 @@ public:
       &handler_for_interface
     );
 
+    matcher.addMatcher(
+      callExpr(
+        hasAnyArgument(hasType(asString("pthread_mutex_t *")))
+      ).bind("ptr_ref"),
+      &handler_for_ref
+    );
+
     YAML::Emitter out;
     YAML::Node node;
     SourceManager& sm = Context.getSourceManager();
@@ -403,6 +464,7 @@ private:
   MemAllocaMatchHandler handler_for_mem_alloca;
   ArrayMatchHandler handler_for_array;
   TypedefMatchHandler handler_for_typedef;
+  PtrRefMatchHandler handler_for_ref;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
