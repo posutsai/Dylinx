@@ -175,6 +175,7 @@ public:
         Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, format);
       Dylinx::Instance().lock_i++;
       Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
+      Dylinx::Instance().should_header_modify[src_id] = true;
     }
   }
 };
@@ -187,6 +188,36 @@ public:
       //! config from config.yml
       printf("!!!! typedef %s\n", d->getNameAsString().c_str());
 
+    }
+  }
+};
+
+class StructFieldMatchHandler: public MatchFinder::MatchCallback {
+public:
+  StructFieldMatchHandler() {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const FieldDecl *fd = result.Nodes.getNodeAs<FieldDecl>("struct_members")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      SourceLocation loc = fd->getBeginLoc();
+      FileID src_id = sm.getFileID(loc);
+      uint32_t line = sm.getSpellingLineNumber(loc);
+      LocID key = std::make_pair(src_id, line);
+      std::vector<LocID>::iterator iter = std::find(
+        Dylinx::Instance().commented_locks.begin(),
+        Dylinx::Instance().commented_locks.end(),
+        key
+      );
+      char format[50];
+      sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
+      Dylinx::Instance().rw.ReplaceText(loc, 15, format);
+      YAML::Node decl_loc;
+      decl_loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
+      decl_loc["line"] = sm.getSpellingLineNumber(fd->getBeginLoc());
+      decl_loc["id"] = Dylinx::Instance().lock_i;
+      decl_loc["is_commented"] = iter == Dylinx::Instance().commented_locks.end()? 0: 1;
+      Dylinx::Instance().lock_i++;
+      Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
+      Dylinx::Instance().should_header_modify[src_id] = true;
     }
   }
 };
@@ -221,13 +252,6 @@ public:
           std::string without_comma = with_comma.substr(0, found).c_str();
           end = begin.getLocWithOffset(without_comma.length());
         }
-        printf("%s !!!! type[%d] is  %s (%u, %u, %u)\n",
-          e->getDirectCallee()->getNameInfo().getName().getAsString().c_str(), i,
-          arg->getType().getAsString().c_str(),
-          sm.getSpellingColumnNumber(arg->getBeginLoc()),
-          sm.getSpellingColumnNumber(arg->getEndLoc()),
-          sm.getSpellingColumnNumber(arg->getExprLoc())
-        );
         if (!strcmp(arg->getType().getAsString().c_str(), "pthread_mutex_t *")) {
           Dylinx::Instance().rw.InsertTextBefore(begin, "__dylinx_generic_get_type_(");
           Dylinx::Instance().rw.InsertTextAfter(end, ")");
@@ -273,7 +297,7 @@ public:
       );
       const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
       if (pvd) {
-        Dylinx::Instance().rw.ReplaceText(pvd->getBeginLoc(), 15, "entity_with_type_t");
+        Dylinx::Instance().rw.ReplaceText(pvd->getTypeSourceInfo()->getTypeLoc().getSourceRange(), "entity_with_type_t ");
       } else if (Dylinx::Instance().last_altered_loc != key) {
         char format[50];
         sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
@@ -372,7 +396,7 @@ public:
             callee(functionDecl(hasName("malloc"))),
             hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
           )).bind("malloc2decls")
-        ))).bind("mutex_ptr_decl"),
+        ))),
       &handler_for_mem_alloca
     );
 
@@ -384,7 +408,7 @@ public:
           functionDecl(hasName("malloc"))),
           hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
         )).bind("malloc2assign")))
-      ).bind("assignment"),
+      ),
       &handler_for_mem_alloca
     );
 
@@ -404,6 +428,14 @@ public:
         hasAnyArgument(hasType(asString("pthread_mutex_t *")))
       ).bind("ptr_ref"),
       &handler_for_ref
+    );
+
+    matcher.addMatcher(
+      fieldDecl(eachOf(
+        hasType(asString("pthread_mutex_t")),
+        hasType(asString("pthread_mutex_t *"))
+      )).bind("struct_members"),
+      &handler_for_struct
     );
 
     YAML::Emitter out;
@@ -465,6 +497,7 @@ private:
   ArrayMatchHandler handler_for_array;
   TypedefMatchHandler handler_for_typedef;
   PtrRefMatchHandler handler_for_ref;
+  StructFieldMatchHandler handler_for_struct;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
