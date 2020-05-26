@@ -34,6 +34,6 @@ int ttas_destroy(void *entity) {
   printf("TTAS lock destroy !!!!\n");
   return 1;
 }
-DYLINX_INIT_LOCK(ttas, 1);
+DYLINX_INIT_LOCK(ttas, 2);
 
 #endif

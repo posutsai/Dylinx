@@ -6,6 +6,7 @@
 #define LOCKED 0
 #define UNLOCKED 1
 #define CPU_PAUSE() asm volatile("pause\n" : : : "memory")
+#define NEGA(num) (~num + 1)
 
 typedef int (*initializer_fn)(void *, pthread_mutexattr_t *);
 typedef int (*locker_fn)(void *);
@@ -38,53 +39,85 @@ static inline uint8_t tas_uint8(volatile uint8_t *addr) {
   return (uint8_t)oldval;
 }
 
-typedef struct GenericInterface {
-  char padding[sizeof(pthread_mutex_t)];
+struct Methods4Lock {
+  initializer_fn initializer;
+  locker_fn locker;
+  unlocker_fn unlocker;
+  destroyer_fn destroyer;
+};
+int pthreadmtx_init(void *entity, pthread_mutexattr_t *attr) {
+  entity = malloc(sizeof(pthread_mutex_t));
+  return pthread_mutex_init((pthread_mutex_t *)entity, attr);
+}
+
+int pthreadmtx_lock(void *entity) { return pthread_mutex_lock((pthread_mutex_t *)entity); }
+int pthreadmtx_unlock(void *entity) { return pthread_mutex_unlock((pthread_mutex_t *)entity); }
+int pthreadmtx_destroy(void *entity) { return pthread_mutex_destroy((pthread_mutex_t *)entity); }
+
+static struct Methods4Lock id2methods_table[LOCK_TYPE_CNT] = {
+  {
+    pthreadmtx_init,
+    pthreadmtx_lock,
+    pthreadmtx_unlock,
+    pthreadmtx_destroy
+  }
+};
+
+//! The glue code here is only for Linux POSIX interface implementation.
+//  However, it is still easy to port Dylinx on other OS. The only
+//  requirement is to place the member dylinx_type at the exact same
+//  offset in the pthread mutex member of the targeting OS which is
+//  defined as integer but the allowed value is only positive.
+typedef struct __attribute__((packed)) GenericInterface {
   void *entity;
-  initializer_fn lock_init;
-  locker_fn lock_enable;
-  unlocker_fn lock_disable;
-  destroyer_fn lock_destroy;
-  uint32_t isnt_pthread;
+  // dylinx_type has the same offset as __owners in
+  // pthread_mutex_t.
+  int32_t dylinx_type;
+  struct Methods4Lock *methods;
+  char padding[sizeof(pthread_mutex_t) - 24];
 } generic_interface_t;
 
-typedef struct EntityWithType {
-  uint32_t mtx_type;
-  void *entity;
-} entity_with_type_t;
+// Checking condition should be as strict as possible to make sure
+// there is no double allocation.
+int is_dylinx_defined(generic_interface_t *gen_lock) {
+  return NEGA(LOCK_TYPE_CNT) <= gen_lock->dylinx_type &&
+    gen_lock->dylinx_type < 0 &&
+    !memcmp(id2methods_table + NEGA(gen_lock->dylinx_type) - 1, gen_lock->methods, sizeof(struct Methods4Lock));
+}
 
 #define COMPILER_BARRIER() asm volatile("" : : : "memory")
 #define DYLINX_INIT_LOCK(ltype, num)                                                                          \
+static uint32_t __dylinx_ ## ltype ## _ID = num;                                                              \
+                                                                                                              \
 typedef union {                                                                                               \
   pthread_mutex_t dummy_lock;                                                                                 \
   generic_interface_t interface;                                                                              \
 } dylinx_ ## ltype ## lock_t;                                                                                 \
                                                                                                               \
 int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mutexattr_t *attr) {              \
-  memset(lock, 0, sizeof(generic_interface_t));                                                               \
-  lock->interface.lock_init = ltype ## _init;                                                                 \
-  lock->interface.lock_enable = ltype ## _lock;                                                               \
-  lock->interface.lock_disable = ltype ## _unlock;                                                            \
-  lock->interface.lock_destroy = ltype ## _destroy;                                                           \
-  lock->interface.isnt_pthread = 1;                                                                           \
-  return lock->interface.lock_init(lock->interface.entity, attr);                                             \
+  generic_interface_t *gen_lock = (generic_interface_t *)lock;                                                \
+  memset(gen_lock, 0, sizeof(generic_interface_t));                                                           \
+  gen_lock->methods = malloc(sizeof(struct Methods4Lock));                                                    \
+  gen_lock->methods->initializer = ltype ## _init;                                                            \
+  gen_lock->methods->locker = ltype ## _lock;                                                                 \
+  gen_lock->methods->unlocker = ltype ## _unlock;                                                             \
+  gen_lock->methods->destroyer = ltype ## _destroy;                                                           \
+  gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                    \
+  return gen_lock->methods->initializer(gen_lock->entity, attr);                                              \
 }                                                                                                             \
                                                                                                               \
 int dylinx_ ## ltype ## lock_enable(dylinx_ ## ltype ## lock_t *lock) {                                       \
-  if (!lock->interface.isnt_pthread)                                                                          \
+  if (lock->interface.dylinx_type != NEGA(__dylinx_ ## ltype ## _ID))                                         \
     dylinx_ ## ltype ## lock_init(lock, NULL);                                                                \
-  return lock->interface.lock_enable(lock->interface.entity);                                                 \
+  return lock->interface.methods->locker(lock->interface.entity);                                             \
 }                                                                                                             \
                                                                                                               \
 static dylinx_## ltype ## lock_t __dylinx_ ## ltype ## lock_instance;                                         \
-static uint32_t __dylinx_ ## ltype ## _ID = num;                                                              \
                                                                                                               \
-entity_with_type_t dylinx_ ## ltype ## lock_gettype(dylinx_ ## ltype ## lock_t *lock) {                       \
-  entity_with_type_t l = {                                                                                    \
-    .mtx_type = __dylinx_ ## ltype ## _ID,                                                                    \
-    .entity = (void *)lock                                                                                    \
-  };                                                                                                          \
-  return l;                                                                                                   \
+generic_interface_t *dylinx_ ## ltype ## lock_cast(dylinx_ ## ltype ## lock_t *lock) {                        \
+  generic_interface_t *gen_lock = (generic_interface_t *)lock;                                                \
+  dylinx_ ## ltype ## lock_init(lock, NULL);                                                                \
+  return gen_lock;                                                                                            \
 }
 
 #endif
