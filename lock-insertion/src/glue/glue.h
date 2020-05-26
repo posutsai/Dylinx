@@ -95,4 +95,9 @@ DYLINX_INIT_LOCK(pthreadmtx, 1);
   default: dylinx_lock_destroy                                              \
 )(entity)
 
+#define FILL_ARRAY(type, head, len)                                         \
+  do {                                                                      \
+    dylinx_ ## type ## lock_fill_array(head, len);                          \
+  } while(0)
+
 #endif // __DYLINX_GLUE__
