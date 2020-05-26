@@ -27,12 +27,10 @@ int dylinx_lock_destroy(void *lock) {
 generic_interface_t *dylinx_genlock_forward(generic_interface_t *gen_lock) { return gen_lock; }
 
 int dylinx_typeless_init(generic_interface_t *gen_lock, pthread_mutexattr_t *attr) {
-  if (!is_dylinx_defined(gen_lock)) {
-    printf("this is native pthread_mutex\n");
-    return pthread_mutex_init((pthread_mutex_t *)gen_lock->entity, attr);
+  if (is_dylinx_defined(gen_lock)) {
+    return gen_lock->methods->initializer(gen_lock->entity, attr);
   }
-  printf("this is dylinx lock type %d\n", gen_lock->dylinx_type);
-  return 0;
+  return pthread_mutex_init((pthread_mutex_t *)gen_lock, attr);
 }
 
 int dylinx_typeless_enable(generic_interface_t *gen_lock) {
@@ -43,19 +41,19 @@ int dylinx_typeless_enable(generic_interface_t *gen_lock) {
   }
   // No issue since generic_interface_t and pthread_mutex_t both have the same
   // size.
-  return pthread_mutex_lock((pthread_mutex_t *)gen_lock->entity);
+  return pthread_mutex_lock((pthread_mutex_t *)gen_lock);
 }
 
 int dylinx_typeless_disable(generic_interface_t *gen_lock) {
   if (is_dylinx_defined(gen_lock))
     gen_lock->methods->unlocker(gen_lock->entity);
-  return pthread_mutex_unlock((pthread_mutex_t *)gen_lock->entity);
+  return pthread_mutex_unlock((pthread_mutex_t *)gen_lock);
 }
 
 int dylinx_typeless_destroy(generic_interface_t *gen_lock) {
   if (is_dylinx_defined(gen_lock))
     gen_lock->methods->destroyer(gen_lock->entity);
-  return pthread_mutex_destroy((pthread_mutex_t *)gen_lock->entity);
+  return pthread_mutex_destroy((pthread_mutex_t *)gen_lock);
 }
 
 generic_interface_t *native_pthreadmtx_forward(pthread_mutex_t *mtx) {

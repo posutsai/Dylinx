@@ -96,13 +96,15 @@ typedef union {                                                                 
                                                                                                               \
 int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mutexattr_t *attr) {              \
   generic_interface_t *gen_lock = (generic_interface_t *)lock;                                                \
-  memset(gen_lock, 0, sizeof(generic_interface_t));                                                           \
-  gen_lock->methods = malloc(sizeof(struct Methods4Lock));                                                    \
-  gen_lock->methods->initializer = ltype ## _init;                                                            \
-  gen_lock->methods->locker = ltype ## _lock;                                                                 \
-  gen_lock->methods->unlocker = ltype ## _unlock;                                                             \
-  gen_lock->methods->destroyer = ltype ## _destroy;                                                           \
-  gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                    \
+  if (!is_dylinx_defined(gen_lock)) {                                                                         \
+    memset(gen_lock, 0, sizeof(generic_interface_t));                                                         \
+    gen_lock->methods = malloc(sizeof(struct Methods4Lock));                                                  \
+    gen_lock->methods->initializer = ltype ## _init;                                                          \
+    gen_lock->methods->locker = ltype ## _lock;                                                               \
+    gen_lock->methods->unlocker = ltype ## _unlock;                                                           \
+    gen_lock->methods->destroyer = ltype ## _destroy;                                                         \
+    gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                  \
+  }                                                                                                           \
   return gen_lock->methods->initializer(gen_lock->entity, attr);                                              \
 }                                                                                                             \
                                                                                                               \
@@ -116,8 +118,27 @@ static dylinx_## ltype ## lock_t __dylinx_ ## ltype ## lock_instance;           
                                                                                                               \
 generic_interface_t *dylinx_ ## ltype ## lock_cast(dylinx_ ## ltype ## lock_t *lock) {                        \
   generic_interface_t *gen_lock = (generic_interface_t *)lock;                                                \
-  dylinx_ ## ltype ## lock_init(lock, NULL);                                                                \
+  memset(gen_lock, 0, sizeof(generic_interface_t));                                                           \
+  gen_lock->methods = malloc(sizeof(struct Methods4Lock));                                                    \
+  gen_lock->methods->initializer = ltype ## _init;                                                            \
+  gen_lock->methods->locker = ltype ## _lock;                                                                 \
+  gen_lock->methods->unlocker = ltype ## _unlock;                                                             \
+  gen_lock->methods->destroyer = ltype ## _destroy;                                                           \
+  gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                    \
   return gen_lock;                                                                                            \
+}                                                                                                             \
+                                                                                                              \
+void dylinx_ ## ltype ## lock_fill_array(dylinx_ ## ltype ## lock_t *head, size_t len) {                      \
+  for (int i = 0; i < len; i++) {                                                                             \
+    generic_interface_t *gen_lock = (generic_interface_t *)head + i;                                          \
+    memset(gen_lock, 0, sizeof(generic_interface_t));                                                         \
+    gen_lock->methods = malloc(sizeof(struct Methods4Lock));                                                  \
+    gen_lock->methods->initializer = ltype ## _init;                                                          \
+    gen_lock->methods->locker = ltype ## _lock;                                                               \
+    gen_lock->methods->unlocker = ltype ## _unlock;                                                           \
+    gen_lock->methods->destroyer = ltype ## _destroy;                                                         \
+    gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                  \
+  }                                                                                                           \
 }
 
 #endif
