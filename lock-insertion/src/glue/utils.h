@@ -1,6 +1,8 @@
 #include "padding.h"
+#include <stdatomic.h>
 #ifndef __DYLINX_TOPOLOGY__
 #define __DYLINX_TOPOLOGY__
+#pragma clang diagnostic ignored "-Waddress-of-packed-member"
 
 #define L_CACHE_LINE_SIZE 64
 #define LOCKED 0
@@ -8,10 +10,10 @@
 #define CPU_PAUSE() asm volatile("pause\n" : : : "memory")
 #define NEGA(num) (~num + 1)
 
-typedef int (*initializer_fn)(void *, pthread_mutexattr_t *);
-typedef int (*locker_fn)(void *);
-typedef int (*unlocker_fn)(void *);
-typedef int (*destroyer_fn)(void *);
+typedef int (*initializer_fn)(void **, pthread_mutexattr_t *);
+typedef int (*locker_fn)(void **);
+typedef int (*unlocker_fn)(void **);
+typedef int (*destroyer_fn)(void **);
 
 inline void *alloc_cache_align(size_t n) {
   void *res = 0;
@@ -45,14 +47,14 @@ struct Methods4Lock {
   unlocker_fn unlocker;
   destroyer_fn destroyer;
 };
-int pthreadmtx_init(void *entity, pthread_mutexattr_t *attr) {
-  entity = malloc(sizeof(pthread_mutex_t));
-  return pthread_mutex_init((pthread_mutex_t *)entity, attr);
+int pthreadmtx_init(void **entity, pthread_mutexattr_t *attr) {
+  *entity = malloc(sizeof(pthread_mutex_t));
+  return pthread_mutex_init((pthread_mutex_t *)*entity, attr);
 }
 
-int pthreadmtx_lock(void *entity) { return pthread_mutex_lock((pthread_mutex_t *)entity); }
-int pthreadmtx_unlock(void *entity) { return pthread_mutex_unlock((pthread_mutex_t *)entity); }
-int pthreadmtx_destroy(void *entity) { return pthread_mutex_destroy((pthread_mutex_t *)entity); }
+int pthreadmtx_lock(void **entity) { return pthread_mutex_lock((pthread_mutex_t *)*entity); }
+int pthreadmtx_unlock(void **entity) { return pthread_mutex_unlock((pthread_mutex_t *)*entity); }
+int pthreadmtx_destroy(void **entity) { return pthread_mutex_destroy((pthread_mutex_t *)*entity); }
 
 static struct Methods4Lock id2methods_table[LOCK_TYPE_CNT] = {
   {
@@ -74,7 +76,8 @@ typedef struct __attribute__((packed)) GenericInterface {
   // pthread_mutex_t.
   int32_t dylinx_type;
   struct Methods4Lock *methods;
-  char padding[sizeof(pthread_mutex_t) - 24];
+  _Atomic int32_t init_signal;
+  char padding[sizeof(pthread_mutex_t) - 16];
 } generic_interface_t;
 
 // Checking condition should be as strict as possible to make sure
@@ -105,13 +108,13 @@ int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mute
     gen_lock->methods->destroyer = ltype ## _destroy;                                                         \
     gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                  \
   }                                                                                                           \
-  return gen_lock->methods->initializer(gen_lock->entity, attr);                                              \
+  return gen_lock->methods->initializer(&gen_lock->entity, attr);                                              \
 }                                                                                                             \
                                                                                                               \
 int dylinx_ ## ltype ## lock_enable(dylinx_ ## ltype ## lock_t *lock) {                                       \
-  if (lock->interface.dylinx_type != NEGA(__dylinx_ ## ltype ## _ID))                                         \
+  if (lock->interface.dylinx_type != NEGA(__dylinx_ ## ltype ## _ID))                                        \
     dylinx_ ## ltype ## lock_init(lock, NULL);                                                                \
-  return lock->interface.methods->locker(lock->interface.entity);                                             \
+  return lock->interface.methods->locker(&lock->interface.entity);                                             \
 }                                                                                                             \
                                                                                                               \
 static dylinx_## ltype ## lock_t __dylinx_ ## ltype ## lock_instance;                                         \

@@ -12,14 +12,15 @@
 #ifndef __DYLINX_GLUE__
 #define __DYLINX_GLUE__
 #define DYLINX_PTHREADMTX_ID 1
+#pragma clang diagnostic ignored "-Waddress-of-packed-member"
 int dylinx_lock_disable(void *lock) {
   generic_interface_t *gen_lock = lock;
-  return gen_lock->methods->unlocker(gen_lock->entity);
+  return gen_lock->methods->unlocker(&gen_lock->entity);
 }
 
 int dylinx_lock_destroy(void *lock) {
   generic_interface_t *gen_lock = lock;
-  gen_lock->methods->destroyer(gen_lock->entity);
+  gen_lock->methods->destroyer(&gen_lock->entity);
   free(gen_lock->methods);
   return 1;
 }
@@ -28,7 +29,7 @@ generic_interface_t *dylinx_genlock_forward(generic_interface_t *gen_lock) { ret
 
 int dylinx_typeless_init(generic_interface_t *gen_lock, pthread_mutexattr_t *attr) {
   if (is_dylinx_defined(gen_lock)) {
-    return gen_lock->methods->initializer(gen_lock->entity, attr);
+    return gen_lock->methods->initializer(&gen_lock->entity, attr);
   }
   return pthread_mutex_init((pthread_mutex_t *)gen_lock, attr);
 }
@@ -37,7 +38,7 @@ int dylinx_typeless_enable(generic_interface_t *gen_lock) {
   // gen_lock is the lock types defined in Dylinx including dylinx compatible
   // pthread-mutex and other customized lock.
   if (is_dylinx_defined(gen_lock)) {
-    gen_lock->methods->locker(gen_lock->entity);
+    gen_lock->methods->locker(&gen_lock->entity);
   }
   // No issue since generic_interface_t and pthread_mutex_t both have the same
   // size.
@@ -46,13 +47,13 @@ int dylinx_typeless_enable(generic_interface_t *gen_lock) {
 
 int dylinx_typeless_disable(generic_interface_t *gen_lock) {
   if (is_dylinx_defined(gen_lock))
-    gen_lock->methods->unlocker(gen_lock->entity);
+    gen_lock->methods->unlocker(&gen_lock->entity);
   return pthread_mutex_unlock((pthread_mutex_t *)gen_lock);
 }
 
 int dylinx_typeless_destroy(generic_interface_t *gen_lock) {
   if (is_dylinx_defined(gen_lock))
-    gen_lock->methods->destroyer(gen_lock->entity);
+    gen_lock->methods->destroyer(&gen_lock->entity);
   return pthread_mutex_destroy((pthread_mutex_t *)gen_lock);
 }
 
@@ -80,7 +81,7 @@ DYLINX_INIT_LOCK(pthreadmtx, 1);
 
 #define __dylinx_generic_enable_(entity) _Generic((entity),                 \
   pthread_mutex_t *: pthread_mutex_lock,                                    \
-  dylinx_pthreadmtx_t *: dylinx_pthreadmtxlock_enable,                      \
+  dylinx_pthreadmtxlock_t *: dylinx_pthreadmtxlock_enable,                      \
   dylinx_ttaslock_t *: dylinx_ttaslock_enable,                              \
   generic_interface_t *: dylinx_typeless_enable                             \
 )(entity)
