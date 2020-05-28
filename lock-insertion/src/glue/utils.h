@@ -1,5 +1,4 @@
 #include "padding.h"
-#include <stdatomic.h>
 #ifndef __DYLINX_TOPOLOGY__
 #define __DYLINX_TOPOLOGY__
 #pragma clang diagnostic ignored "-Waddress-of-packed-member"
@@ -14,6 +13,11 @@ typedef int (*initializer_fn)(void **, pthread_mutexattr_t *);
 typedef int (*locker_fn)(void **);
 typedef int (*unlocker_fn)(void **);
 typedef int (*destroyer_fn)(void **);
+
+int ttas_init(void **, pthread_mutexattr_t *);
+int ttas_lock(void **);
+int ttas_unlock(void **);
+int ttas_destroy(void **);
 
 inline void *alloc_cache_align(size_t n) {
   void *res = 0;
@@ -47,6 +51,15 @@ struct Methods4Lock {
   unlocker_fn unlocker;
   destroyer_fn destroyer;
 };
+
+struct MethodsWithMtx {
+  initializer_fn initializer;
+  locker_fn locker;
+  unlocker_fn unlocker;
+  destroyer_fn destroyer;
+  pthread_mutex_t mtx;
+};
+
 int pthreadmtx_init(void **entity, pthread_mutexattr_t *attr) {
   *entity = malloc(sizeof(pthread_mutex_t));
   return pthread_mutex_init((pthread_mutex_t *)*entity, attr);
@@ -56,12 +69,20 @@ int pthreadmtx_lock(void **entity) { return pthread_mutex_lock((pthread_mutex_t 
 int pthreadmtx_unlock(void **entity) { return pthread_mutex_unlock((pthread_mutex_t *)*entity); }
 int pthreadmtx_destroy(void **entity) { return pthread_mutex_destroy((pthread_mutex_t *)*entity); }
 
-static struct Methods4Lock id2methods_table[LOCK_TYPE_CNT] = {
+static struct MethodsWithMtx id2methods_table[LOCK_TYPE_CNT] = {
   {
     pthreadmtx_init,
     pthreadmtx_lock,
     pthreadmtx_unlock,
-    pthreadmtx_destroy
+    pthreadmtx_destroy,
+    PTHREAD_MUTEX_INITIALIZER
+  },
+  {
+    ttas_init,
+    ttas_lock,
+    ttas_unlock,
+    ttas_destroy,
+    PTHREAD_MUTEX_INITIALIZER
   }
 };
 
@@ -76,10 +97,10 @@ typedef struct __attribute__((packed)) GenericInterface {
   // pthread_mutex_t.
   int32_t dylinx_type;
   struct Methods4Lock *methods;
-  _Atomic int32_t init_signal;
-  char padding[sizeof(pthread_mutex_t) - 16];
+  char padding[sizeof(pthread_mutex_t) - 24];
 } generic_interface_t;
 
+static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;;
 // Checking condition should be as strict as possible to make sure
 // there is no double allocation.
 int is_dylinx_defined(generic_interface_t *gen_lock) {
@@ -100,6 +121,11 @@ typedef union {                                                                 
 int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mutexattr_t *attr) {              \
   generic_interface_t *gen_lock = (generic_interface_t *)lock;                                                \
   if (!is_dylinx_defined(gen_lock)) {                                                                         \
+    pthread_mutex_lock(&id2methods_table[__dylinx_ ## ltype ## _ID - 1].mtx);                                 \
+    if (is_dylinx_defined(gen_lock)) {                                                                        \
+      pthread_mutex_unlock(&id2methods_table[__dylinx_ ## ltype ## _ID - 1].mtx);                             \
+      return 1;                                                                                               \
+    }                                                                                                         \
     memset(gen_lock, 0, sizeof(generic_interface_t));                                                         \
     gen_lock->methods = malloc(sizeof(struct Methods4Lock));                                                  \
     gen_lock->methods->initializer = ltype ## _init;                                                          \
@@ -107,27 +133,36 @@ int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mute
     gen_lock->methods->unlocker = ltype ## _unlock;                                                           \
     gen_lock->methods->destroyer = ltype ## _destroy;                                                         \
     gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                  \
+    pthread_mutex_unlock(&id2methods_table[__dylinx_ ## ltype ## _ID - 1].mtx);                               \
   }                                                                                                           \
-  return gen_lock->methods->initializer(&gen_lock->entity, attr);                                              \
+  return gen_lock->methods->initializer(&gen_lock->entity, attr);                                             \
 }                                                                                                             \
                                                                                                               \
 int dylinx_ ## ltype ## lock_enable(dylinx_ ## ltype ## lock_t *lock) {                                       \
-  if (lock->interface.dylinx_type != NEGA(__dylinx_ ## ltype ## _ID))                                        \
+  if (lock->interface.dylinx_type != NEGA(__dylinx_ ## ltype ## _ID))                                         \
     dylinx_ ## ltype ## lock_init(lock, NULL);                                                                \
-  return lock->interface.methods->locker(&lock->interface.entity);                                             \
+  return lock->interface.methods->locker(&lock->interface.entity);                                            \
 }                                                                                                             \
                                                                                                               \
 static dylinx_## ltype ## lock_t __dylinx_ ## ltype ## lock_instance;                                         \
                                                                                                               \
 generic_interface_t *dylinx_ ## ltype ## lock_cast(dylinx_ ## ltype ## lock_t *lock) {                        \
   generic_interface_t *gen_lock = (generic_interface_t *)lock;                                                \
-  memset(gen_lock, 0, sizeof(generic_interface_t));                                                           \
-  gen_lock->methods = malloc(sizeof(struct Methods4Lock));                                                    \
-  gen_lock->methods->initializer = ltype ## _init;                                                            \
-  gen_lock->methods->locker = ltype ## _lock;                                                                 \
-  gen_lock->methods->unlocker = ltype ## _unlock;                                                             \
-  gen_lock->methods->destroyer = ltype ## _destroy;                                                           \
-  gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                    \
+  if (!is_dylinx_defined(gen_lock)) {                                                                         \
+    pthread_mutex_lock(&id2methods_table[__dylinx_ ## ltype ## _ID - 1].mtx);                                 \
+    if (is_dylinx_defined(gen_lock)) {                                                                        \
+      pthread_mutex_unlock(&id2methods_table[__dylinx_ ## ltype ## _ID - 1].mtx);                             \
+      return gen_lock;                                                                                        \
+    }                                                                                                         \
+    memset(gen_lock, 0, sizeof(generic_interface_t));                                                         \
+    gen_lock->methods = malloc(sizeof(struct Methods4Lock));                                                  \
+    gen_lock->methods->initializer = ltype ## _init;                                                          \
+    gen_lock->methods->locker = ltype ## _lock;                                                               \
+    gen_lock->methods->unlocker = ltype ## _unlock;                                                           \
+    gen_lock->methods->destroyer = ltype ## _destroy;                                                         \
+    gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                  \
+    pthread_mutex_unlock(&id2methods_table[__dylinx_ ## ltype ## _ID - 1].mtx);                               \
+  }                                                                                                           \
   return gen_lock;                                                                                            \
 }                                                                                                             \
                                                                                                               \
