@@ -97,7 +97,7 @@ typedef struct __attribute__((packed)) GenericInterface {
   // pthread_mutex_t.
   int32_t dylinx_type;
   struct Methods4Lock *methods;
-  char padding[sizeof(pthread_mutex_t) - 24];
+  char padding[sizeof(pthread_mutex_t) - 20];
 } generic_interface_t;
 
 static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;;

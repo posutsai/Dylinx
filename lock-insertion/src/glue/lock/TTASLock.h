@@ -15,22 +15,22 @@ typedef struct ttas_lock {
 // 1. The private attribute ttas_lock_t *impl will switch among three states
 //    {UNLOCKED=1, LOCKED-1, 255}
 
-int ttas_init(void *entity, pthread_mutexattr_t *attr) {
+int ttas_init(void **entity, pthread_mutexattr_t *attr) {
   printf("TTAS lock initialize !!!\n");
   return 1;
 }
 
-int ttas_lock(void *entity) {
-  printf("TTAS lock enable !!!!\n");
+int ttas_lock(void **entity) {
+  // printf("TTAS lock enable !!!!\n");
   return 1;
 }
 
-int ttas_unlock(void *entity) {
-  printf("TTAS lock disable !!!!\n");
+int ttas_unlock(void **entity) {
+  // printf("TTAS lock disable !!!!\n");
   return 1;
 }
 
-int ttas_destroy(void *entity) {
+int ttas_destroy(void **entity) {
   printf("TTAS lock destroy !!!!\n");
   return 1;
 }

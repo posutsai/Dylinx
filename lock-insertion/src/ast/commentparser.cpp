@@ -120,15 +120,37 @@ class MemAllocaMatchHandler: public MatchFinder::MatchCallback {
 public:
   MemAllocaMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
-    const CallExpr *decl_expr = result.Nodes.getNodeAs<CallExpr>("malloc2decls");
-    const CallExpr *assign_expr = result.Nodes.getNodeAs<CallExpr>("malloc2assign");
-    const CallExpr *e = decl_expr? decl_expr: assign_expr;
+    const CallExpr *e;
+    std::string ptr_name;
+    if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("malloc_decl")) {
+      ptr_name = vd->getNameAsString();
+      e = result.Nodes.getNodeAs<CallExpr>("malloc_decl_callexpr");
+    } else if (const BinaryOperator *binop = result.Nodes.getNodeAs<BinaryOperator>("malloc_assign")) {
+      DeclRefExpr *drefexpr = dyn_cast<DeclRefExpr>(binop->getLHS());
+      ptr_name = drefexpr->getNameInfo().getAsString();
+      e = result.Nodes.getNodeAs<CallExpr>("malloc_assign_callexpr");
+    } else {
+      perror("Runtime error malloc matcher operation fault!\n");
+    }
     if(!e)
       return;
     SourceManager& sm = result.Context->getSourceManager();
     SourceLocation loc = e->getBeginLoc();
     FileID src_id = sm.getFileID(loc);
     uint32_t line = sm.getSpellingLineNumber(loc);
+    char arr_init[100];
+    SourceLocation size_begin = e->getArg(0)->getBeginLoc();
+    SourceLocation size_end = e->getRParenLoc();
+    SourceRange range(size_begin, size_end);
+    sprintf(
+      arr_init, " FILL_ARRAY(%s, %s);",
+      ptr_name.c_str(),
+      Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str()
+    );
+    Dylinx::Instance().rw.InsertTextAfter(
+      e->getEndLoc().getLocWithOffset(2),
+      arr_init
+    );
     YAML::Node alloca;
     alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
     alloca["line"] = line;
@@ -140,8 +162,6 @@ public:
       com
     );
     alloca["is_commented"] = iter == Dylinx::Instance().commented_locks.end()? 0: 1;
-    SourceLocation sizeof_begin = dyn_cast<UnaryExprOrTypeTraitExpr>(e->getArg(0))->getBeginLoc();
-    Dylinx::Instance().rw.ReplaceText(sizeof_begin.getLocWithOffset(7), 15, "generic_interface_t");
     Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
   }
 };
@@ -187,8 +207,7 @@ public:
         char arr_init[100];
         sprintf(
           arr_init,
-          " FILL_ARRAY(DYLINX_LOCK_%d_ARR_TYPE, %s, (%s) * sizeof(pthread_mutex_t));",
-          Dylinx::Instance().lock_i,
+          " FILL_ARRAY( %s, (%s) * sizeof(pthread_mutex_t));",
           d->getNameAsString().c_str(),
           array_size
         );
@@ -419,8 +438,8 @@ public:
           callExpr(
             callee(functionDecl(hasName("malloc"))),
             hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
-          )).bind("malloc2decls")
-        ))),
+          )).bind("malloc_decl_callexpr")
+        ))).bind("malloc_decl"),
       &handler_for_mem_alloca
     );
 
@@ -431,8 +450,8 @@ public:
          callExpr(callee(
           functionDecl(hasName("malloc"))),
           hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
-        )).bind("malloc2assign")))
-      ),
+        )).bind("malloc_assign_callexpr")))
+      ).bind("malloc_assign"),
       &handler_for_mem_alloca
     );
 
