@@ -165,14 +165,38 @@ public:
         Dylinx::Instance().commented_locks.end(),
         com
       );
-      alloca["is_commented"] =  iter == Dylinx::Instance().commented_locks.end()? 0: 1;
-      char format[50];
-      sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
+      alloca["is_commented"] = iter == Dylinx::Instance().commented_locks.end()? 0: 1;
+      SourceLocation size_begin, size_end;
+      char array_size[50];
+      if (const ConstantArrayType *arr_type = result.Context->getAsConstantArrayType(d->getType())) {
+        sprintf(array_size, "%lu", arr_type->getSize().getZExtValue());
+      } else if (const VariableArrayType *arr_type = result.Context->getAsVariableArrayType(d->getType())) {
+        size_begin = arr_type->getLBracketLoc().getLocWithOffset(1);
+        size_end = arr_type->getRBracketLoc();
+        SourceRange size_range(size_begin, size_end);
+        sprintf(array_size, "%s", Lexer::getSourceText(CharSourceRange(size_range, false), sm, result.Context->getLangOpts()).str().c_str());
+      } else { perror("Array type is neither constant nor variable\n"); };
+      char type_macro[50];
+      sprintf(type_macro, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
       if (d->getStorageClass() == StorageClass::SC_Static) {
         loc = Lexer::findNextToken(loc, sm, result.Context->getLangOpts())->getLocation();
-        Dylinx::Instance().rw.ReplaceText(loc, 15, format);
-      } else
-        Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, format);
+        Dylinx::Instance().rw.ReplaceText(loc, 15, type_macro);
+        alloca["extra_init"] = 1;
+      } else {
+        Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, type_macro);
+        char arr_init[100];
+        sprintf(
+          arr_init,
+          " FILL_ARRAY(DYLINX_LOCK_%d_ARR_TYPE, %s, (%s) * sizeof(pthread_mutex_t));",
+          Dylinx::Instance().lock_i,
+          d->getNameAsString().c_str(),
+          array_size
+        );
+        Dylinx::Instance().rw.InsertTextAfter(
+          d->getEndLoc().getLocWithOffset(2),
+          arr_init
+        );
+      }
       Dylinx::Instance().lock_i++;
       Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
       Dylinx::Instance().should_header_modify[src_id] = true;
@@ -253,7 +277,7 @@ public:
           end = begin.getLocWithOffset(without_comma.length());
         }
         if (!strcmp(arg->getType().getAsString().c_str(), "pthread_mutex_t *")) {
-          Dylinx::Instance().rw.InsertTextBefore(begin, "__dylinx_generic_get_type_(");
+          Dylinx::Instance().rw.InsertTextBefore(begin, "__dylinx_generic_cast_(");
           Dylinx::Instance().rw.InsertTextAfter(end, ")");
         }
       }
@@ -297,7 +321,7 @@ public:
       );
       const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
       if (pvd) {
-        Dylinx::Instance().rw.ReplaceText(pvd->getTypeSourceInfo()->getTypeLoc().getSourceRange(), "entity_with_type_t ");
+        Dylinx::Instance().rw.ReplaceText(pvd->getTypeSourceInfo()->getTypeLoc().getSourceRange(), "generic_interface_t *");
       } else if (Dylinx::Instance().last_altered_loc != key) {
         char format[50];
         sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
