@@ -61,6 +61,15 @@ generic_interface_t *native_pthreadmtx_forward(pthread_mutex_t *mtx) {
   return (generic_interface_t *)mtx;
 }
 
+// Since reinitialization is an undefined behavior, we just do nothing.
+void dummy_func(pthread_mutex_t *mtx, size_t len) {};
+
+// If the passed variable is typeless, the lock behavior will automatically
+// degenerate to native pthread_mutex_t;
+void dylinx_degenerate_fill_array(generate_interface_t *mtx, size_t len) {
+  dylinx_pthreadmtxlock_fill_array(mtx, len);
+}
+
 DYLINX_INIT_LOCK(pthreadmtx, 1);
 
 // dylinx_genlock_forward is only apply when the lock instance is passed nestedly
@@ -81,10 +90,17 @@ DYLINX_INIT_LOCK(pthreadmtx, 1);
 
 #define __dylinx_generic_enable_(entity) _Generic((entity),                 \
   pthread_mutex_t *: pthread_mutex_lock,                                    \
-  dylinx_pthreadmtxlock_t *: dylinx_pthreadmtxlock_enable,                      \
+  dylinx_pthreadmtxlock_t *: dylinx_pthreadmtxlock_enable,                  \
   dylinx_ttaslock_t *: dylinx_ttaslock_enable,                              \
   generic_interface_t *: dylinx_typeless_enable                             \
 )(entity)
+
+#define __dylinx_generic_fill_array_(entity, bytes) _Generic((entity),      \
+  pthread_mutex_t *: dummy_func,                                            \
+  dylinx_pthreadmtxlock_t *: dylinx_pthreadmtxlock_fill_array,              \
+  dylinx_ttaslock_t *: dylinx_ttaslock_fill_array,                          \
+  default: dylinx_degenerate_fill_array                                     \
+)(entity, bytes)
 
 #define __dylinx_generic_disable_(entity) _Generic((entity),                \
   pthread_mutex_t *: pthread_mutex_unlock,                                  \
@@ -96,9 +112,9 @@ DYLINX_INIT_LOCK(pthreadmtx, 1);
   default: dylinx_lock_destroy                                              \
 )(entity)
 
-#define FILL_ARRAY(type, head, len)                                         \
+#define FILL_ARRAY(head, bytes)                                             \
   do {                                                                      \
-    dylinx_ ## type ## lock_fill_array(head, len);                          \
+    __dylinx_generic_fill_array_(head, bytes / sizeof(pthread_mutex_t));    \
   } while(0)
 
 #endif // __DYLINX_GLUE__
