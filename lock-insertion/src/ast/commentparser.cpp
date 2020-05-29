@@ -31,6 +31,10 @@
 #include "yaml-cpp/yaml.h"
 #include "util.h"
 
+#define ARR_ALLOCA_TYPE "ARR"
+#define VAR_ALLOCA_TYPE "VAR"
+#define STRUCT_MEM_ALLOCA_TYPE "MEM"
+
 // TODO
 // 1. Implement the header file for definition of
 //    each lock and glue code.
@@ -204,6 +208,11 @@ public:
   }
 };
 
+//! TODO
+//  If the pthread_mutex_t array is declared in local scope which is able
+//  to execute any function the whole array should be initialized right
+//  after declaration.
+//  Refer to isStatical
 class ArrayMatchHandler: public MatchFinder::MatchCallback {
 public:
   ArrayMatchHandler() {}
@@ -214,16 +223,12 @@ public:
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
       YAML::Node alloca;
+      if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
+        alloca["user_input_type"] = parse_comment(comment->getBriefText(*result.Context));
       alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
       alloca["line"] = line;
       alloca["id"] = Dylinx::Instance().lock_i;
-      LocID com = std::make_pair(src_id, line);
-      std::vector<LocID>::iterator iter = std::find(
-        Dylinx::Instance().commented_locks.begin(),
-        Dylinx::Instance().commented_locks.end(),
-        com
-      );
-      alloca["is_commented"] = iter == Dylinx::Instance().commented_locks.end()? 0: 1;
+      alloca["allocation_type"] = ARR_ALLOCA_TYPE;
       SourceLocation size_begin, size_end;
       char array_size[50];
       if (const ConstantArrayType *arr_type = result.Context->getAsConstantArrayType(d->getType())) {
@@ -234,14 +239,17 @@ public:
         SourceRange size_range(size_begin, size_end);
         sprintf(array_size, "%s", Lexer::getSourceText(CharSourceRange(size_range, false), sm, result.Context->getLangOpts()).str().c_str());
       } else { perror("Array type is neither constant nor variable\n"); };
+
       char type_macro[50];
       sprintf(type_macro, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
       if (d->getStorageClass() == StorageClass::SC_Static) {
         loc = Lexer::findNextToken(loc, sm, result.Context->getLangOpts())->getLocation();
         Dylinx::Instance().rw.ReplaceText(loc, 15, type_macro);
         alloca["extra_init"] = 1;
-      } else {
+      } else
         Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, type_macro);
+
+      if (d->getStorageClass() != StorageClass::SC_Static || d->isStaticLocal()) {
         char arr_init[100];
         sprintf(
           arr_init,
@@ -394,16 +402,6 @@ public:
         d->isFunctionOrMethodVarDecl()
       );
       LocID key = std::make_pair(src_id, line);
-      std::vector<LocID>::iterator iter = std::find(
-        Dylinx::Instance().commented_locks.begin(),
-        Dylinx::Instance().commented_locks.end(),
-        key
-      );
-      YAML::Node decl_loc;
-      if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d)) {
-        printf("comment is %s\n", comment->getBriefText(*result.Context));
-        decl_loc["user_input_type"] = parse_comment(comment->getBriefText(*result.Context));
-      }
       const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
       if (pvd) {
         Dylinx::Instance().rw.ReplaceText(pvd->getTypeSourceInfo()->getTypeLoc().getSourceRange(), "generic_interface_t *");
@@ -416,15 +414,16 @@ public:
             sm,
             result.Context->getLangOpts()
           )->getLocation();
-          printf("find static vardecl %s %s!!!\n", d->getName().str().c_str(), format);
           Dylinx::Instance().rw.ReplaceText(loc, 15, format);
         }
-        else // TODO should be implemented in finding next token way.
+        else
           Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, format);
+        YAML::Node decl_loc;
+        if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
+          decl_loc["user_input_type"] = parse_comment(comment->getBriefText(*result.Context));
         decl_loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
         decl_loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
         decl_loc["id"] = Dylinx::Instance().lock_i;
-        decl_loc["is_commented"] = iter == Dylinx::Instance().commented_locks.end()? 0: 1;
         Dylinx::Instance().lock_i++;
         Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
         Dylinx::Instance().should_header_modify[src_id] = true;
