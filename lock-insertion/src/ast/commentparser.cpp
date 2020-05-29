@@ -62,6 +62,18 @@ namespace fs = std::filesystem;
 
 std::string processing_dir = ".processing/";
 
+const Token *move2n_token(SourceLocation loc, uint32_t n, SourceManager& sm, const LangOptions& opts) {
+  SourceLocation arrive = loc;
+  Token *token;
+  for (int i = 0; i < n; i++) {
+    token = Lexer::findNextToken(
+      arrive, sm, opts
+    ).getPointer();
+    arrive = token->getLocation();
+  }
+  return token;
+}
+
 // Consider FileID and line number combination as an unique ID.
 typedef std::pair<FileID, uint32_t> LocID;
 class Dylinx {
@@ -228,9 +240,32 @@ public:
   TypedefMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const TypedefNameDecl *d = result.Nodes.getNodeAs<TypedefNameDecl>("typedefs")) {
-      //! config from config.yml
-      printf("!!!! typedef %s\n", d->getNameAsString().c_str());
-
+      SourceManager& sm = result.Context->getSourceManager();
+      const Token *token = move2n_token(d->getBeginLoc(), 2, sm, result.Context->getLangOpts());
+      char format[100];
+      sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
+      Dylinx::Instance().rw.ReplaceText(
+        token->getLocation(),
+        token->getLength(),
+        format
+      );
+      SourceLocation loc = d->getBeginLoc();
+      FileID src_id = sm.getFileID(loc);
+      uint32_t line = sm.getSpellingLineNumber(loc);
+      YAML::Node lock_meta;
+      lock_meta["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
+      lock_meta["line"] = line;
+      lock_meta["id"] = Dylinx::Instance().lock_i;
+      LocID com = std::make_pair(src_id, line);
+      std::vector<LocID>::iterator iter = std::find(
+        Dylinx::Instance().commented_locks.begin(),
+        Dylinx::Instance().commented_locks.end(),
+        com
+      );
+      lock_meta["is_commented"] = iter == Dylinx::Instance().commented_locks.end()? 0: 1;
+      Dylinx::Instance().lock_i++;
+      Dylinx::Instance().lock_decl["LockEntity"].push_back(lock_meta);
+      Dylinx::Instance().should_header_modify[src_id] = true;
     }
   }
 };
