@@ -74,6 +74,27 @@ const Token *move2n_token(SourceLocation loc, uint32_t n, SourceManager& sm, con
   return token;
 }
 
+YAML::Node parse_comment(std::string raw_text) {
+  // exterior match
+  std::smatch config_result;
+  std::regex re("\\[LockSlot\\](.*)");
+  std::regex_match(raw_text, config_result, re);
+  printf("raw_text is %s and match size is %lu\n",raw_text.c_str(), config_result.size());
+  YAML::Node cmb;
+  if (config_result.size() == 2) { // meet exterior condition
+    std::smatch comb_result;
+    std::string combination = config_result[1];
+    std::regex lock_pattern(getLockPattern());
+    while(std::regex_search(combination, comb_result, lock_pattern)) {
+      std::string t = comb_result[1];
+      printf("matched %s\n", t.c_str());
+      combination = comb_result.suffix().str();
+      cmb.push_back(t);
+    }
+  }
+  return cmb;
+}
+
 // Consider FileID and line number combination as an unique ID.
 typedef std::pair<FileID, uint32_t> LocID;
 class Dylinx {
@@ -134,13 +155,16 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     const CallExpr *e;
     std::string ptr_name;
+    bool new_decl;
     if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("malloc_decl")) {
       ptr_name = vd->getNameAsString();
       e = result.Nodes.getNodeAs<CallExpr>("malloc_decl_callexpr");
+      new_decl = true;
     } else if (const BinaryOperator *binop = result.Nodes.getNodeAs<BinaryOperator>("malloc_assign")) {
       DeclRefExpr *drefexpr = dyn_cast<DeclRefExpr>(binop->getLHS());
       ptr_name = drefexpr->getNameInfo().getAsString();
       e = result.Nodes.getNodeAs<CallExpr>("malloc_assign_callexpr");
+      new_decl = false;
     } else {
       perror("Runtime error malloc matcher operation fault!\n");
     }
@@ -163,6 +187,8 @@ public:
       e->getEndLoc().getLocWithOffset(2),
       arr_init
     );
+    if (!new_decl)
+      return;
     YAML::Node alloca;
     alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
     alloca["line"] = line;
@@ -373,6 +399,11 @@ public:
         Dylinx::Instance().commented_locks.end(),
         key
       );
+      YAML::Node decl_loc;
+      if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d)) {
+        printf("comment is %s\n", comment->getBriefText(*result.Context));
+        decl_loc["user_input_type"] = parse_comment(comment->getBriefText(*result.Context));
+      }
       const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
       if (pvd) {
         Dylinx::Instance().rw.ReplaceText(pvd->getTypeSourceInfo()->getTypeLoc().getSourceRange(), "generic_interface_t *");
@@ -388,9 +419,8 @@ public:
           printf("find static vardecl %s %s!!!\n", d->getName().str().c_str(), format);
           Dylinx::Instance().rw.ReplaceText(loc, 15, format);
         }
-        else
+        else // TODO should be implemented in finding next token way.
           Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, format);
-        YAML::Node decl_loc;
         decl_loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
         decl_loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
         decl_loc["id"] = Dylinx::Instance().lock_i;
