@@ -4,6 +4,7 @@
 #include "clang/AST/Type.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/Comment.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -31,9 +32,10 @@
 #include "yaml-cpp/yaml.h"
 #include "util.h"
 
-#define ARR_ALLOCA_TYPE "ARR"
-#define VAR_ALLOCA_TYPE "VAR"
-#define STRUCT_MEM_ALLOCA_TYPE "MEM"
+#define ARR_ALLOCA_TYPE "ARRAY"
+#define VAR_ALLOCA_TYPE "VARIABLE"
+#define STRUCT_MEM_ALLOCA_TYPE "STRUCT_MEMBER"
+#define TYPEDEF_ALLOCA_TYPE "TYPEDEF"
 
 // TODO
 // 1. Implement the header file for definition of
@@ -142,17 +144,6 @@ private:
   };
 };
 
-// class TypedefMatchHandler: public MatchFinder::MatchCallback {
-// public:
-//   TypedefMatchHandler() {}
-//   virtual void run(const MatchFinder::MatchResult &result) {
-//     if (const TypedefNameDecl *d = result.Nodes.getNodeAs<TypedefNameDecl>("typedefs")) {
-//       SourceManager& sm = result.Context->getSourceManager();
-//       SourceLocation loc = d->getBeginLoc();
-//     }
-//   }
-// };
-
 class MemAllocaMatchHandler: public MatchFinder::MatchCallback {
 public:
   MemAllocaMatchHandler() {}
@@ -208,11 +199,6 @@ public:
   }
 };
 
-//! TODO
-//  If the pthread_mutex_t array is declared in local scope which is able
-//  to execute any function the whole array should be initialized right
-//  after declaration.
-//  Refer to isStatical
 class ArrayMatchHandler: public MatchFinder::MatchCallback {
 public:
   ArrayMatchHandler() {}
@@ -224,11 +210,11 @@ public:
       uint32_t line = sm.getSpellingLineNumber(loc);
       YAML::Node alloca;
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
-        alloca["user_input_type"] = parse_comment(comment->getBriefText(*result.Context));
+        alloca["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
       alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
       alloca["line"] = line;
       alloca["id"] = Dylinx::Instance().lock_i;
-      alloca["allocation_type"] = ARR_ALLOCA_TYPE;
+      alloca["modification_type"] = ARR_ALLOCA_TYPE;
       SourceLocation size_begin, size_end;
       char array_size[50];
       if (const ConstantArrayType *arr_type = result.Context->getAsConstantArrayType(d->getType())) {
@@ -273,7 +259,7 @@ class TypedefMatchHandler: public MatchFinder::MatchCallback {
 public:
   TypedefMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
-    if (const TypedefNameDecl *d = result.Nodes.getNodeAs<TypedefNameDecl>("typedefs")) {
+    if (const TypedefDecl *d = result.Nodes.getNodeAs<TypedefDecl>("typedefs")) {
       SourceManager& sm = result.Context->getSourceManager();
       const Token *token = move2n_token(d->getBeginLoc(), 2, sm, result.Context->getLangOpts());
       char format[100];
@@ -287,9 +273,12 @@ public:
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
       YAML::Node lock_meta;
+      if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
+        lock_meta["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
       lock_meta["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
       lock_meta["line"] = line;
       lock_meta["id"] = Dylinx::Instance().lock_i;
+      lock_meta["modification_type"] = TYPEDEF_ALLOCA_TYPE;
       LocID com = std::make_pair(src_id, line);
       std::vector<LocID>::iterator iter = std::find(
         Dylinx::Instance().commented_locks.begin(),
@@ -323,10 +312,12 @@ public:
       sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
       Dylinx::Instance().rw.ReplaceText(loc, 15, format);
       YAML::Node decl_loc;
+      if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(fd))
+        decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
       decl_loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
       decl_loc["line"] = sm.getSpellingLineNumber(fd->getBeginLoc());
       decl_loc["id"] = Dylinx::Instance().lock_i;
-      decl_loc["is_commented"] = iter == Dylinx::Instance().commented_locks.end()? 0: 1;
+      decl_loc["modification_type"] = STRUCT_MEM_ALLOCA_TYPE;
       Dylinx::Instance().lock_i++;
       Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
       Dylinx::Instance().should_header_modify[src_id] = true;
@@ -420,10 +411,11 @@ public:
           Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, format);
         YAML::Node decl_loc;
         if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
-          decl_loc["user_input_type"] = parse_comment(comment->getBriefText(*result.Context));
+          decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
         decl_loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
         decl_loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
         decl_loc["id"] = Dylinx::Instance().lock_i;
+        decl_loc["modification_type"] = VAR_ALLOCA_TYPE;
         Dylinx::Instance().lock_i++;
         Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
         Dylinx::Instance().should_header_modify[src_id] = true;
@@ -475,7 +467,7 @@ public:
 
     //! TODO Not implement yet
     matcher.addMatcher(
-      typedefNameDecl(eachOf(
+      typedefDecl(eachOf(
         hasType(asString("pthread_mutex_t")),
         hasType(asString("pthread_mutex_t *"))
       )).bind("typedefs"),
@@ -546,48 +538,7 @@ public:
     );
 
     YAML::Emitter out;
-    YAML::Node node;
-    SourceManager& sm = Context.getSourceManager();
-    auto decls = Context.getTranslationUnitDecl()->decls();
-    YAML::Node markers;
-    for (auto &decl: decls) {
-      if (sm.isInSystemHeader(decl->getLocation()) || !isa<FunctionDecl>(decl) && !isa<LinkageSpecDecl>(decl))
-        continue;
-      Dylinx::Instance().should_header_modify[sm.getFileID(decl->getLocation())] = false;
-      if (auto *comments = Context.getRawCommentList().getCommentsInFile(sm.getFileID(decl->getLocation()))) {
-        Dylinx::Instance().should_header_modify[sm.getFileID(decl->getLocation())] = true;
-        for (auto cmt : *comments) {
-          YAML::Node mark;
-          std::string comb = cmt.second->getRawText(Context.getSourceManager()).str();
-          std::smatch conf_sm;
-          std::regex re("\\/\\/! \\[LockSlot\\](.*)");
-          std::regex_match(comb, conf_sm, re);
-          if (conf_sm.size() == 2) {
-            SourceLocation loc = cmt.second->getBeginLoc();
-            FileID src_id = sm.getFileID(loc);
-            uint32_t line = sm.getSpellingLineNumber(loc);
-            mark["filepath"] = getAbsolutePath(sm.getFileEntryForID(src_id)->getName());
-            mark["line"] = line;
-            Dylinx::Instance().commented_locks.push_back(std::make_pair(src_id, line));
-            printf("key is (%s, %u)\n", mark["filepath"].as<std::string>().c_str(), mark["line"].as<uint32_t>());
-            std::smatch lock_sm;
-            std::string conf = conf_sm[1];
-            std::regex lock_pat(getLockPattern());
-            YAML::Node cmb;
-            while(std::regex_search(conf, lock_sm, lock_pat)) {
-              std::string t = lock_sm[1];
-              cmb.push_back(t);
-              conf = lock_sm.suffix().str();
-            }
-            mark["comb"] = cmb;
-            node["Mark"].push_back(mark);
-          }
-        }
-        mark_i++;
-      }
-    }
     matcher.matchAST(Context);
-    out << node;
     out << Dylinx::Instance().lock_decl;
     this->yamlfout << out.c_str();
   }
