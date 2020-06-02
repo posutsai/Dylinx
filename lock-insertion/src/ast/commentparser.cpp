@@ -4,7 +4,6 @@
 #include "clang/AST/Type.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/Decl.h"
-#include "clang/AST/Comment.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -36,29 +35,15 @@
 #define VAR_ALLOCA_TYPE "VARIABLE"
 #define STRUCT_MEM_ALLOCA_TYPE "STRUCT_MEMBER"
 #define TYPEDEF_ALLOCA_TYPE "TYPEDEF"
+#define MEM_ALLOCA_TYPE "MALLOC"
 
 // TODO
 // 1. Implement the header file for definition of
-//    each lock and glue code.
+//    each lock and glue code. (Python Script)
 // 2. Copy all the dependency to the processing dir.
 // 3. If there is modifications in dependent headers,
 //    Dylinx should rename them to unique temp name
 //    and modify the code in "#include <....>" part.
-// 4. Things getting more complicated when users
-//    implement their function in different files.
-//    For example:
-//
-//    ------------------------------------------
-//    > In foo.h
-//    void foo();
-//    -------------------------------------------
-//    > In foo.cpp
-//    void foo() { }
-//    ------------------------------------------
-//
-//    In this case, merging ASTs should be considered.
-//    Or maybe compiler_commands.json would solve it
-//    for us. Still not test with "bear".
 
 using namespace clang;
 using namespace llvm;
@@ -85,7 +70,6 @@ YAML::Node parse_comment(std::string raw_text) {
   std::smatch config_result;
   std::regex re("\\[LockSlot\\](.*)");
   std::regex_match(raw_text, config_result, re);
-  printf("raw_text is %s and match size is %lu\n",raw_text.c_str(), config_result.size());
   YAML::Node cmb;
   if (config_result.size() == 2) { // meet exterior condition
     std::smatch comb_result;
@@ -93,7 +77,6 @@ YAML::Node parse_comment(std::string raw_text) {
     std::regex lock_pattern(getLockPattern());
     while(std::regex_search(combination, comb_result, lock_pattern)) {
       std::string t = comb_result[1];
-      printf("matched %s\n", t.c_str());
       combination = comb_result.suffix().str();
       cmb.push_back(t);
     }
@@ -149,26 +132,32 @@ public:
   MemAllocaMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
     const CallExpr *e;
+    SourceManager& sm = result.Context->getSourceManager();
     std::string ptr_name;
-    bool new_decl;
     if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("malloc_decl")) {
       ptr_name = vd->getNameAsString();
       e = result.Nodes.getNodeAs<CallExpr>("malloc_decl_callexpr");
-      new_decl = true;
+      SourceLocation loc = vd->getBeginLoc();
+      FileID src_id = sm.getFileID(loc);
+      uint32_t line = sm.getSpellingLineNumber(loc);
+      YAML::Node alloca;
+      if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(vd))
+        alloca["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
+      alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
+      alloca["line"] = line;
+      alloca["id"] = Dylinx::Instance().lock_i;
+      alloca["modification_type"] = MEM_ALLOCA_TYPE;
+      Dylinx::Instance().lock_i++;
+      Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
     } else if (const BinaryOperator *binop = result.Nodes.getNodeAs<BinaryOperator>("malloc_assign")) {
       DeclRefExpr *drefexpr = dyn_cast<DeclRefExpr>(binop->getLHS());
       ptr_name = drefexpr->getNameInfo().getAsString();
       e = result.Nodes.getNodeAs<CallExpr>("malloc_assign_callexpr");
-      new_decl = false;
     } else {
       perror("Runtime error malloc matcher operation fault!\n");
     }
     if(!e)
       return;
-    SourceManager& sm = result.Context->getSourceManager();
-    SourceLocation loc = e->getBeginLoc();
-    FileID src_id = sm.getFileID(loc);
-    uint32_t line = sm.getSpellingLineNumber(loc);
     char arr_init[100];
     SourceLocation size_begin = e->getArg(0)->getBeginLoc();
     SourceLocation size_end = e->getRParenLoc();
@@ -182,20 +171,6 @@ public:
       e->getEndLoc().getLocWithOffset(2),
       arr_init
     );
-    if (!new_decl)
-      return;
-    YAML::Node alloca;
-    alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
-    alloca["line"] = line;
-    alloca["id"] = Dylinx::Instance().lock_i;
-    LocID com = std::make_pair(src_id, line);
-    std::vector<LocID>::iterator iter = std::find(
-      Dylinx::Instance().commented_locks.begin(),
-      Dylinx::Instance().commented_locks.end(),
-      com
-    );
-    alloca["is_commented"] = iter == Dylinx::Instance().commented_locks.end()? 0: 1;
-    Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
   }
 };
 
@@ -279,13 +254,6 @@ public:
       lock_meta["line"] = line;
       lock_meta["id"] = Dylinx::Instance().lock_i;
       lock_meta["modification_type"] = TYPEDEF_ALLOCA_TYPE;
-      LocID com = std::make_pair(src_id, line);
-      std::vector<LocID>::iterator iter = std::find(
-        Dylinx::Instance().commented_locks.begin(),
-        Dylinx::Instance().commented_locks.end(),
-        com
-      );
-      lock_meta["is_commented"] = iter == Dylinx::Instance().commented_locks.end()? 0: 1;
       Dylinx::Instance().lock_i++;
       Dylinx::Instance().lock_decl["LockEntity"].push_back(lock_meta);
       Dylinx::Instance().should_header_modify[src_id] = true;
@@ -339,7 +307,6 @@ public:
       if (iter != interfaces.end())
         return;
       for (int i = 0; i < e->getNumArgs(); i++) {
-        printf("i == %d\n",i);
         const Expr *arg = e->getArg(i);
         SourceLocation begin = arg->getBeginLoc();
         SourceLocation end;
@@ -383,15 +350,6 @@ public:
         return;
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
-      printf("Hash:%u path:%s Line %u variable name is %s @(%u, %u) isFunctionDecl: %u\n",
-        src_id.getHashValue(),
-        loc.printToString(sm).c_str(),
-        line,
-        d->getName().str().c_str(),
-        sm.getSpellingColumnNumber(d->getBeginLoc()),
-        sm.getSpellingColumnNumber(d->getEndLoc()),
-        d->isFunctionOrMethodVarDecl()
-      );
       LocID key = std::make_pair(src_id, line);
       const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
       if (pvd) {
@@ -464,8 +422,6 @@ public:
     // and convert them to
     //    typedef BaseLock MyLock
     //    typedef BaseLock *MyLock
-
-    //! TODO Not implement yet
     matcher.addMatcher(
       typedefDecl(eachOf(
         hasType(asString("pthread_mutex_t")),
@@ -480,13 +436,6 @@ public:
     //    lock = malloc(sizeof(pthread_mutex_t));
     // and convert them to
     //    __dylinx_ptr_init(malloc(sizeof(pthread_mutex_t)));
-    // ! Note:
-    // Dylinx refuses to implement support for declaring multiple
-    // lock instance through malloc.
-    //    [NOT SUPPORT] pthread_mutex_t *mutex = malloc(100 * sizeof(pthread_mutex_t));
-    //    [NOT SUPPORT] pthread_mutex_t mutex[100];
-    //
-    //! TODO Not implement yet
     matcher.addMatcher(
       varDecl(
         hasType(asString("pthread_mutex_t *")),
@@ -590,8 +539,6 @@ public:
       dep_f != Dylinx::Instance().should_header_modify.end();
       dep_f++
     ) {
-      // TODO
-      // Use #ifdef to prevent double declaration of glue.h
       std::string filename = sm.getFileEntryForID(dep_f->first)->getName().str();
       printf("modifying %s\n", filename.c_str());
       size_t dir_pos = filename.find_last_of("/");
