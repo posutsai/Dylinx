@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <assert.h>
 
-// #include "runtime-config.h"
+#include "dylinx-runtime-config.h"
 // Include all of the lock definition in lock directory.
 #include "lock/TTASLock.h"
 // #include "lock/MutexLock.h"
@@ -64,13 +64,13 @@ generic_interface_t *native_pthreadmtx_forward(pthread_mutex_t *mtx) {
 // Since reinitialization is an undefined behavior, we just do nothing.
 void dummy_func(pthread_mutex_t *mtx, size_t len) {};
 
+DYLINX_INIT_LOCK(pthreadmtx, 1);
 // If the passed variable is typeless, the lock behavior will automatically
 // degenerate to native pthread_mutex_t;
-void dylinx_degenerate_fill_array(generate_interface_t *mtx, size_t len) {
+void dylinx_degenerate_fill_array(generic_interface_t *mtx, size_t len) {
   dylinx_pthreadmtxlock_fill_array(mtx, len);
 }
 
-DYLINX_INIT_LOCK(pthreadmtx, 1);
 
 // dylinx_genlock_forward is only apply when the lock instance is passed nestedly
 // in interior scope.
@@ -114,7 +114,7 @@ DYLINX_INIT_LOCK(pthreadmtx, 1);
 
 #define FILL_ARRAY(head, bytes)                                             \
   do {                                                                      \
-    __dylinx_generic_fill_array_(head, bytes / sizeof(pthread_mutex_t));    \
+    __dylinx_generic_fill_array_(head, (bytes / sizeof(pthread_mutex_t)));  \
   } while(0)
 
 #endif // __DYLINX_GLUE__

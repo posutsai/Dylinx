@@ -3,6 +3,7 @@
 #define __DYLINX_TOPOLOGY__
 #pragma clang diagnostic ignored "-Waddress-of-packed-member"
 
+#define LOCK_TYPE_CNT 4
 #define L_CACHE_LINE_SIZE 64
 #define LOCKED 0
 #define UNLOCKED 1

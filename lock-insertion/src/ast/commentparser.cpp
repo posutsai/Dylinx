@@ -238,7 +238,7 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const TypedefDecl *d = result.Nodes.getNodeAs<TypedefDecl>("typedefs")) {
       SourceManager& sm = result.Context->getSourceManager();
-      const Token *token = move2n_token(d->getBeginLoc(), 2, sm, result.Context->getLangOpts());
+      const Token *token = move2n_token(d->getBeginLoc(), 1, sm, result.Context->getLangOpts());
       char format[100];
       sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
       Dylinx::Instance().rw.ReplaceText(
@@ -595,5 +595,5 @@ int main(int argc, const char **argv) {
   const char *compiler_db_path = argv[1];
   std::shared_ptr<CompilationDatabase> compiler_db = CompilationDatabase::autoDetectFromSource(compiler_db_path, err);
   ClangTool tool(*compiler_db, compiler_db->getAllFiles());
-  return tool.run(newSlotIdentificationActionFactory("test-output.yaml", compiler_db).get());
+  return tool.run(newSlotIdentificationActionFactory("dylinx-insertion.yaml", compiler_db).get());
 }
