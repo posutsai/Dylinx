@@ -51,6 +51,26 @@ using namespace clang::tooling;
 using namespace clang::ast_matchers;
 namespace fs = std::filesystem;
 
+// Consider FileID and line number combination as an unique ID.
+typedef std::pair<FileID, uint32_t> LocID;
+class Dylinx {
+public:
+  static Dylinx& Instance() {
+    static Dylinx dylinx;
+    return dylinx;
+  }
+  std::vector<LocID> commented_locks;
+  std::pair<FileID, uint32_t> last_altered_loc;
+  Rewriter rw;
+  std::set<FileID> altered_files;
+  std::string yaml_path;
+  YAML::Node lock_decl;
+  uint32_t lock_i = 0;
+private:
+  Dylinx() {};
+  ~Dylinx() {};
+};
+
 std::string processing_dir = ".processing/";
 
 const Token *move2n_token(SourceLocation loc, uint32_t n, SourceManager& sm, const LangOptions& opts) {
@@ -63,6 +83,16 @@ const Token *move2n_token(SourceLocation loc, uint32_t n, SourceManager& sm, con
     arrive = token->getLocation();
   }
   return token;
+}
+
+void replace_original_file(fs::path file_path, FileID fid) {
+  fs::path parent = file_path.parent_path();
+  if (!fs::exists(parent / ".dylinx"))
+    fs::create_directory(parent / ".dylinx");
+  fs::rename(file_path, parent / ".dylinx" / file_path.filename());
+  std::error_code err;
+  raw_fd_ostream fstream(file_path.string(), err);
+  Dylinx::Instance().rw.getEditBuffer(fid).write(fstream);
 }
 
 YAML::Node parse_comment(std::string raw_text) {
@@ -84,26 +114,6 @@ YAML::Node parse_comment(std::string raw_text) {
   return cmb;
 }
 
-// Consider FileID and line number combination as an unique ID.
-typedef std::pair<FileID, uint32_t> LocID;
-class Dylinx {
-public:
-  static Dylinx& Instance() {
-    static Dylinx dylinx;
-    return dylinx;
-  }
-  std::vector<LocID> commented_locks;
-  std::pair<FileID, uint32_t> last_altered_loc;
-  Rewriter rw;
-  std::map<FileID, bool> should_header_modify;
-  std::string yaml_path;
-  YAML::Node lock_decl;
-  uint32_t lock_i = 0;
-private:
-  Dylinx() {};
-  ~Dylinx() {};
-};
-
 class FuncInterfaceMatchHandler: public MatchFinder::MatchCallback {
 public:
   FuncInterfaceMatchHandler() {}
@@ -115,7 +125,7 @@ public:
         e->getCallee()->getSourceRange(),
         interface_LUT[e->getDirectCallee()->getNameInfo().getName().getAsString()]
       );
-      Dylinx::Instance().should_header_modify[src_id] = true;
+      Dylinx::Instance().altered_files.emplace(src_id);
     }
   }
 private:
@@ -140,15 +150,6 @@ public:
       SourceLocation loc = vd->getBeginLoc();
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
-      YAML::Node alloca;
-      if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(vd))
-        alloca["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
-      alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
-      alloca["line"] = line;
-      alloca["id"] = Dylinx::Instance().lock_i;
-      alloca["modification_type"] = MEM_ALLOCA_TYPE;
-      Dylinx::Instance().lock_i++;
-      Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
     } else if (const BinaryOperator *binop = result.Nodes.getNodeAs<BinaryOperator>("malloc_assign")) {
       DeclRefExpr *drefexpr = dyn_cast<DeclRefExpr>(binop->getLHS());
       ptr_name = drefexpr->getNameInfo().getAsString();
@@ -171,6 +172,7 @@ public:
       e->getEndLoc().getLocWithOffset(2),
       arr_init
     );
+    Dylinx::Instance().altered_files.emplace(sm.getFileID(e->getBeginLoc()));
   }
 };
 
@@ -225,7 +227,7 @@ public:
       }
       Dylinx::Instance().lock_i++;
       Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
-      Dylinx::Instance().should_header_modify[src_id] = true;
+      Dylinx::Instance().altered_files.emplace(src_id);
     }
   }
 };
@@ -256,7 +258,7 @@ public:
       lock_meta["modification_type"] = TYPEDEF_ALLOCA_TYPE;
       Dylinx::Instance().lock_i++;
       Dylinx::Instance().lock_decl["LockEntity"].push_back(lock_meta);
-      Dylinx::Instance().should_header_modify[src_id] = true;
+      Dylinx::Instance().altered_files.emplace(src_id);
     }
   }
 };
@@ -288,7 +290,7 @@ public:
       decl_loc["modification_type"] = STRUCT_MEM_ALLOCA_TYPE;
       Dylinx::Instance().lock_i++;
       Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
-      Dylinx::Instance().should_header_modify[src_id] = true;
+      Dylinx::Instance().altered_files.emplace(src_id);
     }
   }
 };
@@ -327,6 +329,7 @@ public:
           Dylinx::Instance().rw.InsertTextAfter(end, ")");
         }
       }
+      Dylinx::Instance().altered_files.emplace(sm.getFileID(e->getBeginLoc()));
     }
   }
 private:
@@ -352,6 +355,7 @@ public:
       uint32_t line = sm.getSpellingLineNumber(loc);
       LocID key = std::make_pair(src_id, line);
       const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
+      Dylinx::Instance().altered_files.emplace(src_id);
       if (pvd) {
         Dylinx::Instance().rw.ReplaceText(pvd->getTypeSourceInfo()->getTypeLoc().getSourceRange(), "generic_interface_t *");
       } else if (Dylinx::Instance().last_altered_loc != key) {
@@ -376,7 +380,6 @@ public:
         decl_loc["modification_type"] = VAR_ALLOCA_TYPE;
         Dylinx::Instance().lock_i++;
         Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
-        Dylinx::Instance().should_header_modify[src_id] = true;
         Dylinx::Instance().last_altered_loc = key;
       } else
         return;
@@ -488,6 +491,16 @@ public:
 
     YAML::Emitter out;
     matcher.matchAST(Context);
+    std::map<FileID, bool>::iterator file;
+    SourceManager& sm = Context.getSourceManager();
+    // for (
+    //   file = Dylinx::Instance().should_header_modify.begin();
+    //   file != Dylinx::Instance().should_header_modify.end();
+    //   file++
+    // )
+    //   Dylinx::Instance().lock_decl["AlteredFiles"].push_back(
+    //     sm.getFileEntryForID(file->first)->getName().str()
+    //   );
     out << Dylinx::Instance().lock_decl;
     this->yamlfout << out.c_str();
   }
@@ -533,72 +546,14 @@ public:
     // slot_unlock here.
     SourceManager &sm = Dylinx::Instance().rw.getSourceMgr();
     FileManager &fm = sm.getFileManager();
-    std::map<FileID, bool>::iterator dep_f;
-    for (
-      dep_f = Dylinx::Instance().should_header_modify.begin();
-      dep_f != Dylinx::Instance().should_header_modify.end();
-      dep_f++
-    ) {
-      std::string filename = sm.getFileEntryForID(dep_f->first)->getName().str();
+    std::set<FileID>::iterator iter;
+    for (iter = Dylinx::Instance().altered_files.begin(); iter != Dylinx::Instance().altered_files.end(); iter++) {
+      std::string filename = sm.getFileEntryForID(*iter)->getName().str();
       printf("modifying %s\n", filename.c_str());
-      size_t dir_pos = filename.find_last_of("/");
-      filename = filename.substr(dir_pos + 1, filename.length());
-      std::string copy_path = processing_dir + filename;
-      printf("copy to %s \n", copy_path.c_str());
-      if (dep_f->second) {
-        Dylinx::Instance().rw.InsertText(sm.getLocForStartOfFile(dep_f->first), "#include \"glue.h\"\n");
-        std::error_code err;
-        raw_fd_ostream fstream(processing_dir + filename, err);
-        Dylinx::Instance().rw.getEditBuffer(dep_f->first).write(fstream);
-      } else {
-        fs::copy(
-          getAbsolutePath(sm.getFileEntryForID(dep_f->first)->getName()),
-          processing_dir + filename
-        );
-      }
+      Dylinx::Instance().rw.InsertText(sm.getLocForStartOfFile(*iter), "#include \"glue.h\"\n");
+      replace_original_file(filename, *iter);
     }
     return;
-    // TODO
-    // overflow security issue;
-    char compile_cmd[500];
-    std::string main_file = sm.getFileEntryForID(Dylinx::Instance().rw.getSourceMgr().getMainFileID())->getName().str();
-    size_t dir_pos = main_file.find_last_of("/");
-    main_file = main_file.substr(dir_pos + 1, main_file.length());
-    size_t dot_pos = main_file.find_last_of(".");
-    std::string bc_name = main_file.substr(0, dot_pos) + ".ll";
-    sprintf(
-      compile_cmd,
-      "clang++ -S -emit-llvm %s%s -o %s%s",
-      processing_dir.c_str(),
-      main_file.c_str(),
-      processing_dir.c_str(),
-      bc_name.c_str()
-    );
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(compile_cmd, "r"), pclose);
-    if (!pipe) {
-      throw std::runtime_error("popen() failed!");
-    }
-
-    std::string result;
-    std::array<char, 128> buffer;
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
-      result += buffer.data();
-    }
-
-    for (
-      dep_f = is_req_header_modified.begin();
-      dep_f != is_req_header_modified.end();
-      dep_f++
-    ) {
-      std::string filename = sm.getFileEntryForID(dep_f->first)->getName().str();
-      std::size_t dir_pos = filename.find_last_of("/");
-      filename = filename.substr(dir_pos + 1, filename.length());
-      filename = processing_dir + filename;
-      // std::remove(filename.c_str());
-    }
-    // Print modified source code.
-    Dylinx::Instance().rw.getEditBuffer(Dylinx::Instance().rw.getSourceMgr().getMainFileID())
-              .write(llvm::outs());
   }
 private:
   std::string yaml_path;
