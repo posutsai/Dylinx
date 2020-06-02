@@ -5,6 +5,8 @@ import itertools
 import argparse
 import subprocess
 import os
+import pathlib
+import shutil
 
 # Functions and variables for optimize_lock mode.
 
@@ -48,6 +50,12 @@ def brute_force(args):
 def optimize_locks(args):
     brute_force(args)
 
+def revert(args):
+    with open("{}/dylinx-insertion.yaml".format(args.output_dir), "r") as f:
+        for f in list(yaml.load_all(f, Loader=yaml.FullLoader))[0]["AlteredFiles"]:
+            p = pathlib.PurePath(f)
+            shutil.copyfile(str(p.parent) + "/.dylinx/" + p.name, str(p))
+            shutil.rmtree(str(p.parent) + "/.dylinx")
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -86,4 +94,4 @@ if __name__ == "__main__":
     if args.mode == "optimize_locks":
         optimize_locks(args)
     if args.mode == "reverse":
-        print("not implement yet!!!")
+        revert(args)
