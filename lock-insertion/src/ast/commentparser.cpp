@@ -63,7 +63,7 @@ public:
   std::pair<FileID, uint32_t> last_altered_loc;
   Rewriter rw;
   std::set<FileID> altered_files;
-  std::string yaml_path;
+  std::ofstream yaml_fout;
   YAML::Node lock_decl;
   uint32_t lock_i = 0;
 private:
@@ -390,9 +390,6 @@ public:
 class SlotIdentificationConsumer : public clang::ASTConsumer {
 public:
   explicit SlotIdentificationConsumer( ASTContext *Context) {}
-  ~SlotIdentificationConsumer() {
-    this->yamlfout.close();
-  }
   virtual void HandleTranslationUnit(clang::ASTContext &Context) {
 
     // Match all
@@ -414,10 +411,10 @@ public:
     //    pthread_mutex_t locks[NUM_LOCK];
     // and convert them to
     //    pthread_mutex_t locks[NUM_LOCK]; __dylinx_array_init_(locks, NUM_LOCK, DYLINX_LOCK_MACRO);
-    matcher.addMatcher(
-      varDecl(hasType(arrayType(hasElementType(qualType(asString("pthread_mutex_t")))))).bind("array_decls"),
-      &handler_for_array
-    );
+    // matcher.addMatcher(
+    //   varDecl(hasType(arrayType(hasElementType(qualType(asString("pthread_mutex_t")))))).bind("array_decls"),
+    //   &handler_for_array
+    // );
 
     // Match all
     //    typedef pthread_mutex_t MyLock
@@ -489,27 +486,20 @@ public:
       &handler_for_struct
     );
 
-    YAML::Emitter out;
     matcher.matchAST(Context);
-    std::map<FileID, bool>::iterator file;
+    std::set<FileID>::iterator file;
     SourceManager& sm = Context.getSourceManager();
-    // for (
-    //   file = Dylinx::Instance().should_header_modify.begin();
-    //   file != Dylinx::Instance().should_header_modify.end();
-    //   file++
-    // )
-    //   Dylinx::Instance().lock_decl["AlteredFiles"].push_back(
-    //     sm.getFileEntryForID(file->first)->getName().str()
-    //   );
-    out << Dylinx::Instance().lock_decl;
-    this->yamlfout << out.c_str();
-  }
-  void setYamlFout(std::string path) {
-    this->yamlfout = std::ofstream(path.c_str());
+    for (
+      file = Dylinx::Instance().altered_files.begin();
+      file != Dylinx::Instance().altered_files.end();
+      file++
+    )
+      Dylinx::Instance().lock_decl["AlteredFiles"].push_back(
+        sm.getFileEntryForID(*file)->getName().str()
+      );
   }
 private:
   uint32_t mark_i = 0;
-  std::ofstream yamlfout;
   MatchFinder matcher;
   FuncInterfaceMatchHandler handler_for_interface;
   VarsMatchHandler handler_for_vars;
@@ -529,14 +519,8 @@ public:
     std::unique_ptr<SlotIdentificationConsumer> consumer(
       new SlotIdentificationConsumer(&Compiler.getASTContext()
     ));
-    consumer->setYamlFout(this->yaml_path);
     return consumer;
   }
-
-  void setYamlPath(std::string yaml_path) {
-    this->yaml_path = yaml_path;
-  }
-
   void setCompileDB(std::shared_ptr<CompilationDatabase> compiler_db) {
     this->compiler_db = compiler_db;
   }
@@ -556,36 +540,27 @@ public:
     return;
   }
 private:
-  std::string yaml_path;
   std::shared_ptr<CompilationDatabase> compiler_db;
-  std::map<FileID, bool> is_req_header_modified;
 };
 
 
 std::unique_ptr<FrontendActionFactory> newSlotIdentificationActionFactory(
-    std::string yaml_conf,
     std::shared_ptr<CompilationDatabase> compiler_db
     ) {
   class SlotIdentificationActionFactory: public FrontendActionFactory {
   public:
     std::unique_ptr<FrontendAction> create() override {
       std::unique_ptr<SlotIdentificationAction> action(new SlotIdentificationAction);
-      action->setYamlPath(this->yaml_path);
       action->setCompileDB(this->compiler_db);
       return action;
     };
-    void setYamlPath(std::string path) {
-      this->yaml_path = path;
-    }
     void setCompileDB(std::shared_ptr<CompilationDatabase> compiler_db) {
       this->compiler_db = compiler_db;
     }
   private:
-    std::string yaml_path;
     std::shared_ptr<CompilationDatabase> compiler_db;
   };
   std::unique_ptr<SlotIdentificationActionFactory> factory(new SlotIdentificationActionFactory);
-  factory->setYamlPath(yaml_conf);
   factory->setCompileDB(compiler_db);
   return factory;
 }
@@ -593,7 +568,12 @@ std::unique_ptr<FrontendActionFactory> newSlotIdentificationActionFactory(
 int main(int argc, const char **argv) {
   std::string err;
   const char *compiler_db_path = argv[1];
+  Dylinx::Instance().yaml_fout = std::ofstream(argv[2]);
   std::shared_ptr<CompilationDatabase> compiler_db = CompilationDatabase::autoDetectFromSource(compiler_db_path, err);
   ClangTool tool(*compiler_db, compiler_db->getAllFiles());
-  return tool.run(newSlotIdentificationActionFactory("dylinx-insertion.yaml", compiler_db).get());
+  tool.run(newSlotIdentificationActionFactory(compiler_db).get());
+  YAML::Emitter out;
+  out << Dylinx::Instance().lock_decl;
+  Dylinx::Instance().yaml_fout << out.c_str();
+  Dylinx::Instance().yaml_fout.close();
 }

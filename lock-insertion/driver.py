@@ -16,7 +16,10 @@ def get_combination(yaml_path):
     combs = []
     for m in meta_data[0]["LockEntity"]:
         if "lock_combination" in m.keys():
-            combs.append([*m["lock_combination"], "PTHREADMTX"])
+            if "PTHREADMTX" in m["lock_combination"]:
+                combs.append([*m["lock_combination"]])
+            else:
+                combs.append([*m["lock_combination"], "PTHREADMTX"])
         else:
             combs.append(["PTHREADMTX"])
     # combs = [ tuple(m["lock_combination"]) if "lock_combination" in m.keys() else ("PTHREADMTX", ) for m in meta_data[0]["LockEntity"]]
