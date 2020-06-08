@@ -59,9 +59,8 @@ public:
     static Dylinx dylinx;
     return dylinx;
   }
-  std::vector<LocID> commented_locks;
   std::pair<FileID, uint32_t> last_altered_loc;
-  Rewriter rw;
+  Rewriter *rw_ptr;
   std::set<FileID> altered_files;
   std::ofstream yaml_fout;
   YAML::Node lock_decl;
@@ -85,14 +84,16 @@ const Token *move2n_token(SourceLocation loc, uint32_t n, SourceManager& sm, con
   return token;
 }
 
-void replace_original_file(fs::path file_path, FileID fid) {
+void replace_original_file(fs::path file_path, FileID fid, SourceManager& sm) {
   fs::path parent = file_path.parent_path();
   if (!fs::exists(parent / ".dylinx"))
     fs::create_directory(parent / ".dylinx");
   fs::rename(file_path, parent / ".dylinx" / file_path.filename());
   std::error_code err;
   raw_fd_ostream fstream(file_path.string(), err);
-  Dylinx::Instance().rw.getEditBuffer(fid).write(fstream);
+  printf("real subject %s\n", file_path.string().c_str());
+  printf("Editting id is %lu %s\n", fid, sm.getFileEntryForID(fid)->getName().str().c_str());
+  Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
 }
 
 YAML::Node parse_comment(std::string raw_text) {
@@ -121,7 +122,7 @@ public:
     if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("interfaces")) {
       SourceManager& sm = result.Context->getSourceManager();
       FileID src_id = sm.getFileID(e->getBeginLoc());
-      Dylinx::Instance().rw.ReplaceText(
+      Dylinx::Instance().rw_ptr->ReplaceText(
         e->getCallee()->getSourceRange(),
         interface_LUT[e->getDirectCallee()->getNameInfo().getName().getAsString()]
       );
@@ -168,7 +169,7 @@ public:
       ptr_name.c_str(),
       Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str()
     );
-    Dylinx::Instance().rw.InsertTextAfter(
+    Dylinx::Instance().rw_ptr->InsertTextAfter(
       e->getEndLoc().getLocWithOffset(2),
       arr_init
     );
@@ -207,10 +208,10 @@ public:
       sprintf(type_macro, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
       if (d->getStorageClass() == StorageClass::SC_Static) {
         loc = Lexer::findNextToken(loc, sm, result.Context->getLangOpts())->getLocation();
-        Dylinx::Instance().rw.ReplaceText(loc, 15, type_macro);
+        Dylinx::Instance().rw_ptr->ReplaceText(loc, 15, type_macro);
         alloca["extra_init"] = 1;
       } else
-        Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, type_macro);
+        Dylinx::Instance().rw_ptr->ReplaceText(d->getBeginLoc(), 15, type_macro);
 
       if (d->getStorageClass() != StorageClass::SC_Static || d->isStaticLocal()) {
         char arr_init[100];
@@ -220,7 +221,7 @@ public:
           d->getNameAsString().c_str(),
           array_size
         );
-        Dylinx::Instance().rw.InsertTextAfter(
+        Dylinx::Instance().rw_ptr->InsertTextAfter(
           d->getEndLoc().getLocWithOffset(2),
           arr_init
         );
@@ -241,7 +242,7 @@ public:
       const Token *token = move2n_token(d->getBeginLoc(), 1, sm, result.Context->getLangOpts());
       char format[100];
       sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
-      Dylinx::Instance().rw.ReplaceText(
+      Dylinx::Instance().rw_ptr->ReplaceText(
         token->getLocation(),
         token->getLength(),
         format
@@ -272,15 +273,9 @@ public:
       SourceLocation loc = fd->getBeginLoc();
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
-      LocID key = std::make_pair(src_id, line);
-      std::vector<LocID>::iterator iter = std::find(
-        Dylinx::Instance().commented_locks.begin(),
-        Dylinx::Instance().commented_locks.end(),
-        key
-      );
       char format[50];
       sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
-      Dylinx::Instance().rw.ReplaceText(loc, 15, format);
+      Dylinx::Instance().rw_ptr->ReplaceText(loc, 15, format);
       YAML::Node decl_loc;
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(fd))
         decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
@@ -325,8 +320,8 @@ public:
           end = begin.getLocWithOffset(without_comma.length());
         }
         if (!strcmp(arg->getType().getAsString().c_str(), "pthread_mutex_t *")) {
-          Dylinx::Instance().rw.InsertTextBefore(begin, "__dylinx_generic_cast_(");
-          Dylinx::Instance().rw.InsertTextAfter(end, ")");
+          Dylinx::Instance().rw_ptr->InsertTextBefore(begin, "__dylinx_generic_cast_(");
+          Dylinx::Instance().rw_ptr->InsertTextAfter(end, ")");
         }
       }
       Dylinx::Instance().altered_files.emplace(sm.getFileID(e->getBeginLoc()));
@@ -356,8 +351,9 @@ public:
       LocID key = std::make_pair(src_id, line);
       const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
       Dylinx::Instance().altered_files.emplace(src_id);
+      printf("altered id is %lu %s\n", sm.getFileID(loc), sm.getFileEntryForID(src_id)->getName().str().c_str());
       if (pvd) {
-        Dylinx::Instance().rw.ReplaceText(pvd->getTypeSourceInfo()->getTypeLoc().getSourceRange(), "generic_interface_t *");
+        Dylinx::Instance().rw_ptr->ReplaceText(pvd->getTypeSourceInfo()->getTypeLoc().getSourceRange(), "generic_interface_t *");
       } else if (Dylinx::Instance().last_altered_loc != key) {
         char format[50];
         sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
@@ -367,10 +363,10 @@ public:
             sm,
             result.Context->getLangOpts()
           )->getLocation();
-          Dylinx::Instance().rw.ReplaceText(loc, 15, format);
+          Dylinx::Instance().rw_ptr->ReplaceText(loc, 15, format);
         }
         else
-          Dylinx::Instance().rw.ReplaceText(d->getBeginLoc(), 15, format);
+          Dylinx::Instance().rw_ptr->ReplaceText(d->getBeginLoc(), 15, format);
         YAML::Node decl_loc;
         if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
           decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
@@ -389,9 +385,15 @@ public:
 
 class SlotIdentificationConsumer : public clang::ASTConsumer {
 public:
-  explicit SlotIdentificationConsumer( ASTContext *Context) {}
+  Rewriter rw;
+  const LangOptions& opts;
+  explicit SlotIdentificationConsumer(ASTContext *Context, const LangOptions& opts): opts{opts} {}
   virtual void HandleTranslationUnit(clang::ASTContext &Context) {
 
+    SourceManager& sm = Context.getSourceManager();
+    Dylinx::Instance().altered_files.clear();
+    Dylinx::Instance().rw_ptr = new Rewriter;
+    Dylinx::Instance().rw_ptr->setSourceMgr(sm, opts);
     // Match all
     //    pthread_mutex_t mutex;
     //    pthread_mutex_t *mutex_ptr;
@@ -488,7 +490,6 @@ public:
 
     matcher.matchAST(Context);
     std::set<FileID>::iterator file;
-    SourceManager& sm = Context.getSourceManager();
     for (
       file = Dylinx::Instance().altered_files.begin();
       file != Dylinx::Instance().altered_files.end();
@@ -515,10 +516,13 @@ public:
   virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
     clang::CompilerInstance &Compiler, llvm::StringRef InFile
   ) {
-    Dylinx::Instance().rw.setSourceMgr(Compiler.getSourceManager(), Compiler.getLangOpts());
+    // Dylinx::Instance().rw.setSourceMgr(Compiler.getSourceManager(), Compiler.getLangOpts());
     std::unique_ptr<SlotIdentificationConsumer> consumer(
-      new SlotIdentificationConsumer(&Compiler.getASTContext()
-    ));
+      new SlotIdentificationConsumer(
+        &Compiler.getASTContext(),
+        Compiler.getLangOpts()
+      )
+    );
     return consumer;
   }
   void setCompileDB(std::shared_ptr<CompilationDatabase> compiler_db) {
@@ -528,15 +532,15 @@ public:
   void EndSourceFileAction() override {
     // Manually add the definition of BaseLock, slot_lock and
     // slot_unlock here.
-    SourceManager &sm = Dylinx::Instance().rw.getSourceMgr();
-    FileManager &fm = sm.getFileManager();
+    SourceManager &sm = Dylinx::Instance().rw_ptr->getSourceMgr();
     std::set<FileID>::iterator iter;
     for (iter = Dylinx::Instance().altered_files.begin(); iter != Dylinx::Instance().altered_files.end(); iter++) {
       std::string filename = sm.getFileEntryForID(*iter)->getName().str();
-      printf("modifying %s\n", filename.c_str());
-      Dylinx::Instance().rw.InsertText(sm.getLocForStartOfFile(*iter), "#include \"glue.h\"\n");
-      replace_original_file(filename, *iter);
+      printf("modifying %s %lu\n", filename.c_str(), *iter);
+      Dylinx::Instance().rw_ptr->InsertText(sm.getLocForStartOfFile(*iter), "#include \"glue.h\"\n");
+      replace_original_file(filename, *iter, sm);
     }
+    delete Dylinx::Instance().rw_ptr;
     return;
   }
 private:
