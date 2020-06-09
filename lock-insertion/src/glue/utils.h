@@ -92,16 +92,16 @@ static struct MethodsWithMtx id2methods_table[LOCK_TYPE_CNT] = {
 //  requirement is to place the member dylinx_type at the exact same
 //  offset in the pthread mutex member of the targeting OS which is
 //  defined as integer but the allowed value is only positive.
-typedef struct __attribute__((packed)) GenericInterface {
-  void *entity;
-  // dylinx_type has the same offset as __owners in
-  // pthread_mutex_t.
-  int32_t dylinx_type;
-  struct Methods4Lock *methods;
-  char padding[sizeof(pthread_mutex_t) - 20];
-} generic_interface_t;
+// typedef struct __attribute__((packed)) GenericInterface {
+//   void *entity;
+//   // dylinx_type has the same offset as __owners in
+//   // pthread_mutex_t.
+//   int32_t dylinx_type;
+//   struct Methods4Lock *methods;
+//   char padding[sizeof(pthread_mutex_t) - 20];
+// } generic_interface_t;
 
-static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;;
+static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
 // Checking condition should be as strict as possible to make sure
 // there is no double allocation.
 int is_dylinx_defined(generic_interface_t *gen_lock) {
@@ -113,11 +113,6 @@ int is_dylinx_defined(generic_interface_t *gen_lock) {
 #define COMPILER_BARRIER() asm volatile("" : : : "memory")
 #define DYLINX_INIT_LOCK(ltype, num)                                                                          \
 static uint32_t __dylinx_ ## ltype ## _ID = num;                                                              \
-                                                                                                              \
-typedef union {                                                                                               \
-  pthread_mutex_t dummy_lock;                                                                                 \
-  generic_interface_t interface;                                                                              \
-} dylinx_ ## ltype ## lock_t;                                                                                 \
                                                                                                               \
 int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mutexattr_t *attr) {              \
   generic_interface_t *gen_lock = (generic_interface_t *)lock;                                                \

@@ -1,4 +1,3 @@
-#include "glue.h"
 #include "func.h"
 
 void mtx_cycle() {
