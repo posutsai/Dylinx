@@ -35,9 +35,10 @@ def brute_force(args):
     header_start = "#ifndef __DYLINX_ITERATE_LOCK_COMB__\n#define __DYLINX_ITERATE_LOCK_COMB__"
     header_end = "#endif // __DYLINX_ITERATE_LOCK_COMB__"
     # Generate dylinx-insertion.yaml
-    with subprocess.Popen(args=["dylinx", args.compiler_commands], stdout=subprocess.PIPE) as proc:
+    with subprocess.Popen(args=["dylinx", args.compiler_commands, "{}/dylinx-insertion.yaml".format(args.output_dir)], stdout=subprocess.PIPE) as proc:
         out = proc.stdout.read().decode("utf-8").split('\n')[0]
         print(out)
+    os.chdir(str(pathlib.PurePath(args.compiler_commands).parent))
     for comb in get_combination("{}/dylinx-insertion.yaml".format(args.output_dir)):
         with open("{}/dylinx-runtime-config.h".format(os.environ["DYLINX_GLUE_SRC"]), "w") as rt_config:
             rt_config.write( "{}\n\n{}\n\n{}".format(header_start, comb, header_end))
@@ -58,7 +59,9 @@ def revert(args):
         for f in list(yaml.load_all(f, Loader=yaml.FullLoader))[0]["AlteredFiles"]:
             p = pathlib.PurePath(f)
             shutil.copyfile(str(p.parent) + "/.dylinx/" + p.name, str(p))
-            shutil.rmtree(str(p.parent) + "/.dylinx")
+            os.remove(str(p.parent) + "/.dylinx/" + p.name)
+            if len(os.listdir(str(p.parent) + "/.dylinx")) == 0:
+                shutil.rmtree(str(p.parent) + "/.dylinx")
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
