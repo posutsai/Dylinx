@@ -14,6 +14,7 @@ typedef int (*initializer_fn)(void **, pthread_mutexattr_t *);
 typedef int (*locker_fn)(void **);
 typedef int (*unlocker_fn)(void **);
 typedef int (*destroyer_fn)(void **);
+typedef int (*condwait_fn)(void **);
 
 int ttas_init(void **, pthread_mutexattr_t *);
 int ttas_lock(void **);
@@ -128,6 +129,7 @@ int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mute
     gen_lock->methods->locker = ltype ## _lock;                                                               \
     gen_lock->methods->unlocker = ltype ## _unlock;                                                           \
     gen_lock->methods->destroyer = ltype ## _destroy;                                                         \
+    pthread_mutex_init(gen_lock->cv_mtx, NULL);                                                                     \
     gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                  \
     pthread_mutex_unlock(&id2methods_table[__dylinx_ ## ltype ## _ID - 1].mtx);                               \
   }                                                                                                           \
@@ -139,8 +141,6 @@ int dylinx_ ## ltype ## lock_enable(dylinx_ ## ltype ## lock_t *lock) {         
     dylinx_ ## ltype ## lock_init(lock, NULL);                                                                \
   return lock->interface.methods->locker(&lock->interface.entity);                                            \
 }                                                                                                             \
-                                                                                                              \
-static dylinx_## ltype ## lock_t __dylinx_ ## ltype ## lock_instance;                                         \
                                                                                                               \
 generic_interface_t *dylinx_ ## ltype ## lock_cast(dylinx_ ## ltype ## lock_t *lock) {                        \
   generic_interface_t *gen_lock = (generic_interface_t *)lock;                                                \
@@ -156,6 +156,7 @@ generic_interface_t *dylinx_ ## ltype ## lock_cast(dylinx_ ## ltype ## lock_t *l
     gen_lock->methods->locker = ltype ## _lock;                                                               \
     gen_lock->methods->unlocker = ltype ## _unlock;                                                           \
     gen_lock->methods->destroyer = ltype ## _destroy;                                                         \
+    pthread_mutex_init(gen_lock->cv_mtx, NULL);                                                                     \
     gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                  \
     pthread_mutex_unlock(&id2methods_table[__dylinx_ ## ltype ## _ID - 1].mtx);                               \
   }                                                                                                           \
@@ -171,6 +172,7 @@ void dylinx_ ## ltype ## lock_fill_array(dylinx_ ## ltype ## lock_t *head, size_
     gen_lock->methods->locker = ltype ## _lock;                                                               \
     gen_lock->methods->unlocker = ltype ## _unlock;                                                           \
     gen_lock->methods->destroyer = ltype ## _destroy;                                                         \
+    pthread_mutex_init(gen_lock->cv_mtx, NULL);                                                                     \
     gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                  \
   }                                                                                                           \
 }

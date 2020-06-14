@@ -91,8 +91,6 @@ void replace_original_file(fs::path file_path, FileID fid, SourceManager& sm) {
   fs::rename(file_path, parent / ".dylinx" / file_path.filename());
   std::error_code err;
   raw_fd_ostream fstream(file_path.string(), err);
-  printf("real subject %s\n", file_path.string().c_str());
-  printf("Editting id is %lu %s\n", fid, sm.getFileEntryForID(fid)->getName().str().c_str());
   Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
 }
 
@@ -134,7 +132,8 @@ private:
     {"pthread_mutex_init", "__dylinx_generic_init_"},
     {"pthread_mutex_lock", "__dylinx_generic_enable_"},
     {"pthread_mutex_unlock", "__dylinx_generic_disable_"},
-    {"pthread_mutex_destroy", "__dylinx_generic_destroy_"}
+    {"pthread_mutex_destroy", "__dylinx_generic_destroy_"},
+    {"pthread_cond_wait", "__dylinx_generic_condwait_"}
   };
 };
 
@@ -468,7 +467,8 @@ public:
         callee(functionDecl(hasName("pthread_mutex_lock"))),
         callee(functionDecl(hasName("pthread_mutex_unlock"))),
         callee(functionDecl(hasName("pthread_mutex_init"))),
-        callee(functionDecl(hasName("pthread_mutex_destroy")))
+        callee(functionDecl(hasName("pthread_mutex_destroy"))),
+        callee(functionDecl(hasName("pthread_cond_wait")))
       )).bind("interfaces"),
       &handler_for_interface
     );
@@ -536,8 +536,7 @@ public:
     std::set<FileID>::iterator iter;
     for (iter = Dylinx::Instance().altered_files.begin(); iter != Dylinx::Instance().altered_files.end(); iter++) {
       std::string filename = sm.getFileEntryForID(*iter)->getName().str();
-      printf("modifying %s %lu\n", filename.c_str(), *iter);
-      Dylinx::Instance().rw_ptr->InsertText(sm.getLocForStartOfFile(*iter), "#include \"glue.h\"\n");
+      Dylinx::Instance().rw_ptr->InsertText(sm.getLocForStartOfFile(*iter), "#include \"dylinx-glue.h\"\n");
       replace_original_file(filename, *iter, sm);
     }
     delete Dylinx::Instance().rw_ptr;

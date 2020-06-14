@@ -24,7 +24,8 @@ typedef struct __attribute__((packed)) GenericInterface {
   // pthread_mutex_t.
   int32_t dylinx_type;
   struct Methods4Lock *methods;
-  char padding[sizeof(pthread_mutex_t) - 20];
+  pthread_mutex_t *cv_mtx;
+  char padding[sizeof(pthread_mutex_t) - 28];
 } generic_interface_t;
 
 LOCK_DEFINE(ttas);
@@ -32,11 +33,10 @@ LOCK_DEFINE(pthreadmtx);
 
 int dylinx_lock_disable(void *lock);
 int dylinx_lock_destroy(void *lock);
+int dylinx_lock_condwait(pthread_cond_t *cond, void *mtx);
 generic_interface_t *dylinx_genlock_forward(generic_interface_t *gen_lock);
 int dylinx_typeless_init(generic_interface_t *genlock, pthread_mutexattr_t *attr);
 int dylinx_typeless_enable(generic_interface_t *gen_lock);
-int dylinx_typeless_disable(generic_interface_t *gen_lock);
-int dylinx_typeless_destroy(generic_interface_t *gen_lock);
 void dummy_func(pthread_mutex_t *mtx, size_t len);
 void dylinx_degenerate_fill_array(generic_interface_t *mtx, size_t len);
 int dylinx_typeless_destroy(generic_interface_t *gen_lock);
@@ -87,5 +87,10 @@ generic_interface_t *native_pthreadmtx_forward(pthread_mutex_t *mtx);
   default: dylinx_lock_destroy                                              \
 )(entity)
 
+
+#define __dylinx_generic_condwait_(cond, mtx) _Generic((mtx),               \
+  pthread_mutex_t *: pthread_cond_wait,                                     \
+  default: dylinx_lock_condwait                                             \
+)(cond, mtx)
 
 #endif // __DYLINX_SYMBOL__
