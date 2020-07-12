@@ -1,7 +1,4 @@
 #include "dylinx-glue.h"
-// Include all of the lock definition in lock directory.
-#include "lock/TTASLock.h"
-// #include "lock/MutexLock.h"
 
 #ifndef __DYLINX_GLUE__
 #define __DYLINX_GLUE__

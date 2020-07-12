@@ -4,32 +4,19 @@
 #include <stdio.h>
 #include <assert.h>
 #include "dylinx-runtime-config.h"
+// Include all of the lock definition in lock directory.
+#include "lock/ttas-lock.h"
+#include "lock/backoff-lock.h"
 
 #ifndef __DYLINX_SYMBOL__
 #define __DYLINX_SYMBOL__
 
-#define LOCK_DEFINE(ltype)                                                                                    \
-  typedef union Dylinx ## ltype ## Lock {                                                                     \
-    pthread_mutex_t dummy_lock;                                                                               \
-    generic_interface_t interface;                                                                            \
-  } dylinx_ ## ltype ## lock_t;                                                                               \
-  generic_interface_t *dylinx_ ## ltype ## lock_cast(dylinx_ ## ltype ## lock_t *lock);                       \
-  void dylinx_ ## ltype ## lock_fill_array(dylinx_ ## ltype ## lock_t *head, size_t len);                     \
-  int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mutexattr_t *attr);             \
-  int dylinx_ ## ltype ## lock_enable(dylinx_ ## ltype ## lock_t *lock);                                      \
-
-typedef struct __attribute__((packed)) GenericInterface {
-  void *entity;
-  // dylinx_type has the same offset as __owners in
-  // pthread_mutex_t.
-  int32_t dylinx_type;
-  struct Methods4Lock *methods;
-  pthread_mutex_t *cv_mtx;
-  char padding[sizeof(pthread_mutex_t) - 28];
-} generic_interface_t;
-
-LOCK_DEFINE(ttas);
-LOCK_DEFINE(pthreadmtx);
+#define dylinx_init_func(ltype) dylinx_ ## ltype ## lock_t: dylinx_ ## ltype ## lock_init,
+#define DYLINX_INIT_LOCK_LIST(...) FOR_EACH(dylinx_init_func, __VA_ARGS__)
+#define dylinx_enable_func(ltype) dylinx_ ## ltype ## lock_t: dylinx_ ## ltype ## lock_enable,
+#define DYLINX_ENABLE_LOCK_LIST(...) FOR_EACH(dylinx_enable_func, __VA_ARGS__)
+#define dylinx_cast_func(ltype) dylinx_ ## ltype ## lock_t: dylinx_ ## ltype ## lock_cast,
+#define DYLINX_ENABLE_LOCK_LIST(...) FOR_EACH(dylinx_cast_func, __VA_ARGS__)
 
 int dylinx_lock_disable(void *lock);
 int dylinx_lock_destroy(void *lock);
@@ -46,6 +33,7 @@ generic_interface_t *native_pthreadmtx_forward(pthread_mutex_t *mtx);
   pthread_mutex_t *: dummy_func,                                            \
   dylinx_pthreadmtxlock_t *: dylinx_pthreadmtxlock_fill_array,              \
   dylinx_ttaslock_t *: dylinx_ttaslock_fill_array,                          \
+  dylinx_backofflock_t *: dylinx_backoff_fill_array,                        \
   default: dylinx_degenerate_fill_array                                     \
 )(entity, bytes)
 
@@ -55,25 +43,22 @@ generic_interface_t *native_pthreadmtx_forward(pthread_mutex_t *mtx);
   } while(0)
 
 // dylinx_genlock_forward is only apply when the lock instance is passed nestedly
-// in interior scope.
+// in interior scope which suppose to have generic_interface_t type.
 #define __dylinx_generic_cast_(entity) _Generic((entity),                   \
   pthread_mutex_t *: native_pthreadmtx_forward,                             \
-  dylinx_pthreadmtxlock_t *: dylinx_pthreadmtxlock_cast,                    \
-  dylinx_ttaslock_t *: dylinx_ttaslock_cast,                                \
+  DYLINX_CAST_LOCK_LIST(ALLOWED_LOCK_TYPE)                                  \
   default: dylinx_genlock_forward                                           \
 )(entity)
 
 #define __dylinx_generic_init_(entity, attr) _Generic((entity),             \
   pthread_mutex_t *: pthread_mutex_init,                                    \
-  dylinx_pthreadmtxlock_t *: dylinx_pthreadmtxlock_init,                    \
-  dylinx_ttaslock_t *: dylinx_ttaslock_init,                                \
+  DYLINX_INIT_LOCK_LIST(ALLOWED_LOCK_TYPE)                                  \
   generic_interface_t *: dylinx_typeless_init                               \
 )(entity, attr)
 
 #define __dylinx_generic_enable_(entity) _Generic((entity),                 \
   pthread_mutex_t *: pthread_mutex_lock,                                    \
-  dylinx_pthreadmtxlock_t *: dylinx_pthreadmtxlock_enable,                  \
-  dylinx_ttaslock_t *: dylinx_ttaslock_enable,                              \
+  DYLINX_ENABLE_LOCK_LIST(ALLOWED_LOCK_TYPE)                                \
   generic_interface_t *: dylinx_typeless_enable                             \
 )(entity)
 

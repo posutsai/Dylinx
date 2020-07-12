@@ -1,0 +1,17 @@
+#ifndef __DYLINX_ITERATE_LOCK_COMB__
+#define __DYLINX_ITERATE_LOCK_COMB__
+
+#define DYLINX_LOCK_MACRO_0 dylinx_pthreadmtxlock_t
+#define DYLINX_LOCK_MACRO_1 dylinx_pthreadmtxlock_t
+#define DYLINX_LOCK_MACRO_2 dylinx_pthreadmtxlock_t
+#define DYLINX_LOCK_MACRO_3 dylinx_pthreadmtxlock_t
+#define DYLINX_LOCK_MACRO_4 dylinx_pthreadmtxlock_t
+#define DYLINX_LOCK_MACRO_5 dylinx_pthreadmtxlock_t
+#define DYLINX_LOCK_MACRO_6 dylinx_pthreadmtxlock_t
+#define DYLINX_LOCK_MACRO_7 dylinx_pthreadmtxlock_t
+#define DYLINX_LOCK_MACRO_8 dylinx_pthreadmtxlock_t
+#define DYLINX_LOCK_MACRO_9 dylinx_pthreadmtxlock_t
+#define DYLINX_LOCK_MACRO_10 dylinx_pthreadmtxlock_t
+#define DYLINX_LOCK_MACRO_11 dylinx_pthreadmtxlock_t
+
+#endif // __DYLINX_ITERATE_LOCK_COMB__

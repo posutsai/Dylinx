@@ -8,6 +8,7 @@ typedef struct ttas_lock {
   volatile uint8_t spin_lock __attribute__((aligned(L_CACHE_LINE_SIZE)));
   char __pad[pad_to_cache_line(sizeof(uint8_t))];
 } ttas_lock_t __attribute__((aligned(L_CACHE_LINE_SIZE)));
+
 // Paper:
 // The Performance of Spin Lock Alternatives for Shared-Memory Multiprocessors
 // ---------------------------------------------------------------------------
@@ -16,24 +17,39 @@ typedef struct ttas_lock {
 //    {UNLOCKED=1, LOCKED-1, 255}
 
 int ttas_init(void **entity, pthread_mutexattr_t *attr) {
-  printf("TTAS lock initialize !!!\n");
-  return 1;
+#ifdef __DYLINX_DEBUG__
+  printf("ttas-lock is initialized !!!\n");
+#endif
+  ttas_lock_t *mtx = *entity;
+  mtx = (ttas_lock_t *)alloc_cache_align(sizeof(ttas_lock_t));
+  mtx->spin_lock = UNLOCKED;
+  return 0;
 }
 
 int ttas_lock(void **entity) {
-  // printf("TTAS lock enable !!!!\n");
-  return 1;
+  ttas_lock_t *mtx = *entity;
+  while (1) {
+    while (mtx->spin_lock != UNLOCKED)
+      CPU_PAUSE();
+    if (l_tas_uint8(&mtx->spin_lock) == UNLOCKED)
+      break;
+  }
+  return 0;
 }
 
 int ttas_unlock(void **entity) {
-  // printf("TTAS lock disable !!!!\n");
+  COMPILER_BARRIER();
+  ttas_lock_t *mtx = *entity;
+  mtx->spin_lock = UNLOCKED;
   return 1;
 }
 
 int ttas_destroy(void **entity) {
-  printf("TTAS lock destroy !!!!\n");
+  ttas_lock_t *mtx = *entity;
+  free(mtx);
   return 1;
 }
+
 DYLINX_INIT_LOCK(ttas, 2);
 
 #endif
