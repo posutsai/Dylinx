@@ -50,6 +50,6 @@ int ttas_destroy(void **entity) {
   return 1;
 }
 
-DYLINX_INIT_LOCK(ttas, 2);
+DYLINX_EXTERIOR_WRAPPER_IMPLE(ttas, 2);
 
 #endif

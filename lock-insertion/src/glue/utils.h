@@ -10,49 +10,6 @@
 #define CPU_PAUSE() __asm__ __volatile__("pause\n" : : : "memory")
 #define NEGA(num) (~num + 1)
 
-#define FE_0(WHAT)
-#define FE_1(WHAT, X) WHAT(X)
-#define FE_2(WHAT, X, ...) WHAT(X)FE_1(WHAT, __VA_ARGS__)
-#define FE_3(WHAT, X, ...) WHAT(X)FE_2(WHAT, __VA_ARGS__)
-#define FE_4(WHAT, X, ...) WHAT(X)FE_3(WHAT, __VA_ARGS__)
-#define FE_5(WHAT, X, ...) WHAT(X)FE_4(WHAT, __VA_ARGS__)
-#define FE_6(WHAT, X, ...) WHAT(X)FE_5(WHAT, __VA_ARGS__)
-#define FE_7(WHAT, X, ...) WHAT(X)FE_6(WHAT, __VA_ARGS__)
-#define FE_8(WHAT, X, ...) WHAT(X)FE_7(WHAT, __VA_ARGS__)
-#define FE_9(WHAT, X, ...) WHAT(X)FE_8(WHAT, __VA_ARGS__)
-#define FE_10(WHAT, X, ...) WHAT(X)FE_9(WHAT, __VA_ARGS__)
-
-#define GET_MACRO(_0,_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,NAME,...) NAME
-#define FOR_EACH(action,...)                                                \
-  GET_MACRO(                                                                \
-      _0,__VA_ARGS__,FE_10,FE_9,FE_8,FE_7,FE_6,FE_5,FE_4,FE_3,              \
-      FE_2,FE_1,FE_0,                                                       \
-  )(action,__VA_ARGS__)
-
-#define ALLOWED_LOCK_TYPE pthreadmtx, ttas, backoff
-#define COUNT_DOWN()                                                        \
-  11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1
-
-#define AVAILABLE_LOCK_TYPE_NUM(...)                                        \
-  GET_MACRO(__VA_ARGS__)
-
-#if AVAILABLE_LOCK_TYPE_NUM(ALLOWED_LOCK_TYPE, COUNT_DOWN()) > LOCK_TYPE_CNT
-
-#error                                                                      \
-Current number of available lock types isn't enough. Please reset           \
-LOCK_TYPE_CNT macro and corresponding macro definition.
-#endif
-
-typedef struct __attribute__((packed)) GenericInterface {
-  void *entity;
-  // dylinx_type has the same offset as __owners in
-  // pthread_mutex_t.
-  int32_t dylinx_type;
-  struct Methods4Lock *methods;
-  pthread_mutex_t *cv_mtx;
-  char padding[sizeof(pthread_mutex_t) - 28];
-} generic_interface_t;
-
 typedef int (*initializer_fn)(void **, pthread_mutexattr_t *);
 typedef int (*locker_fn)(void **);
 typedef int (*unlocker_fn)(void **);
@@ -73,7 +30,7 @@ LOCK_PROTO_LIST(ALLOWED_LOCK_TYPE)
 UNLOCK_PROTO_LIST(ALLOWED_LOCK_TYPE)
 DESTROY_PROTO_LIST(ALLOWED_LOCK_TYPE)
 
-inline void *alloc_cache_align(size_t n) {
+void *alloc_cache_align(size_t n) {
   void *res = 0;
   if ((MEMALIGN(&res, L_CACHE_LINE_SIZE, cache_align(n)) < 0) || !res) {
     fprintf(stderr, "MEMALIGN(%llu, %llu)", (unsigned long long)n,
@@ -82,28 +39,6 @@ inline void *alloc_cache_align(size_t n) {
   }
   return res;
 }
-
-// In order to add your customized lock and integrate it with
-// Dylinx mechanism, there are two macros worth to be mentioned.
-// The function of macro LOCK_DEFINE defined here is to specify
-// correspoinding function prototype. On the other hand, the
-// macro DYLINX_INIT_LOCK which is defined in utils.h is used to
-// provide actual offer corresponding function content and assign
-// the lock an unique id.
-
-#define LOCK_DEFINE(ltype)                                                                                    \
-  typedef union Dylinx ## ltype ## Lock {                                                                     \
-    pthread_mutex_t dummy_lock;                                                                               \
-    generic_interface_t interface;                                                                            \
-  } dylinx_ ## ltype ## lock_t;                                                                               \
-  generic_interface_t *dylinx_ ## ltype ## lock_cast(dylinx_ ## ltype ## lock_t *lock);                       \
-  void dylinx_ ## ltype ## lock_fill_array(dylinx_ ## ltype ## lock_t *head, size_t len);                     \
-  int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mutexattr_t *attr);             \
-  int dylinx_ ## ltype ## lock_enable(dylinx_ ## ltype ## lock_t *lock);                                      \
-
-LOCK_DEFINE(ttas);
-LOCK_DEFINE(backoff);
-LOCK_DEFINE(pthreadmtx);
 
 // Refer to libstock implementation. The key is to make whole operation
 // atomic. Test-and-set operation will try to assign 0b1 to certain memory
@@ -196,7 +131,7 @@ int is_dylinx_defined(generic_interface_t *gen_lock) {
 // the lock's memory allocation is not going to be double assigned.
 
 #define COMPILER_BARRIER() __asm__ __volatile__("" : : : "memory")
-#define DYLINX_INIT_LOCK(ltype, num)                                                                          \
+#define DYLINX_EXTERIOR_WRAPPER_IMPLE(ltype, num)                                                             \
 static uint32_t __dylinx_ ## ltype ## _ID = num;                                                              \
                                                                                                               \
 int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mutexattr_t *attr) {              \
@@ -224,7 +159,7 @@ int dylinx_ ## ltype ## lock_enable(dylinx_ ## ltype ## lock_t *lock) {         
   if (lock->interface.dylinx_type != NEGA(__dylinx_ ## ltype ## _ID))                                         \
     dylinx_ ## ltype ## lock_init(lock, NULL);                                                                \
   lock->interface.methods->locker(&lock->interface.entity);                                                   \
-  return pthread_mutex_lock(lock->interface.cv_mtx);                                                             \
+  return pthread_mutex_lock(lock->interface.cv_mtx);                                                          \
 }                                                                                                             \
                                                                                                               \
 generic_interface_t *dylinx_ ## ltype ## lock_cast(dylinx_ ## ltype ## lock_t *lock) {                        \
@@ -241,7 +176,7 @@ generic_interface_t *dylinx_ ## ltype ## lock_cast(dylinx_ ## ltype ## lock_t *l
     gen_lock->methods->locker = ltype ## _lock;                                                               \
     gen_lock->methods->unlocker = ltype ## _unlock;                                                           \
     gen_lock->methods->destroyer = ltype ## _destroy;                                                         \
-    pthread_mutex_init(gen_lock->cv_mtx, NULL);                                                                     \
+    pthread_mutex_init(gen_lock->cv_mtx, NULL);                                                               \
     gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                  \
     pthread_mutex_unlock(&id2methods_table[__dylinx_ ## ltype ## _ID - 1].mtx);                               \
   }                                                                                                           \
@@ -257,7 +192,7 @@ void dylinx_ ## ltype ## lock_fill_array(dylinx_ ## ltype ## lock_t *head, size_
     gen_lock->methods->locker = ltype ## _lock;                                                               \
     gen_lock->methods->unlocker = ltype ## _unlock;                                                           \
     gen_lock->methods->destroyer = ltype ## _destroy;                                                         \
-    pthread_mutex_init(gen_lock->cv_mtx, NULL);                                                                     \
+    pthread_mutex_init(gen_lock->cv_mtx, NULL);                                                               \
     gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                  \
   }                                                                                                           \
 }

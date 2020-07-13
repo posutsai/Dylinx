@@ -1,4 +1,7 @@
 #include "dylinx-glue.h"
+// Include all of the lock definition in lock directory.
+#include "lock/ttas-lock.h"
+#include "lock/backoff-lock.h"
 
 #ifndef __DYLINX_GLUE__
 #define __DYLINX_GLUE__
@@ -53,7 +56,7 @@ generic_interface_t *native_pthreadmtx_forward(pthread_mutex_t *mtx) {
 // Since reinitialization is an undefined behavior, we just do nothing.
 void dummy_func(pthread_mutex_t *mtx, size_t len) {};
 
-DYLINX_INIT_LOCK(pthreadmtx, 1);
+DYLINX_EXTERIOR_WRAPPER_IMPLE(pthreadmtx, 1);
 // If the passed variable is typeless, the lock behavior will automatically
 // degenerate to native pthread_mutex_t;
 void dylinx_degenerate_fill_array(generic_interface_t *mtx, size_t len) {

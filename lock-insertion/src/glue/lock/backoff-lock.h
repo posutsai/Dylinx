@@ -59,5 +59,5 @@ int backoff_destroy(void **entity) {
   return 1;
 }
 
-DYLINX_INIT_LOCK(backoff, 3);
+DYLINX_EXTERIOR_WRAPPER_IMPLE(backoff, 3);
 #endif
