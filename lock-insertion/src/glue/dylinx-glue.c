@@ -7,6 +7,21 @@
 #define __DYLINX_GLUE__
 #define DYLINX_PTHREADMTX_ID 1
 #pragma clang diagnostic ignored "-Waddress-of-packed-member"
+
+#define ALLOWED_LOCK_TYPE pthreadmtx, ttas, backoff
+
+#define COUNT_DOWN()                                                        \
+  11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1
+
+#define AVAILABLE_LOCK_TYPE_NUM(...)                                        \
+  GET_MACRO(__VA_ARGS__)
+
+#if AVAILABLE_LOCK_TYPE_NUM(ALLOWED_LOCK_TYPE, COUNT_DOWN()) > LOCK_TYPE_CNT
+#error                                                                      \
+Current number of available lock types isn't enough. Please reset           \
+LOCK_TYPE_CNT macro and corresponding macro definition.
+#endif
+
 int dylinx_lock_disable(void *lock) {
   generic_interface_t *gen_lock = lock;
   pthread_mutex_unlock(gen_lock->cv_mtx);

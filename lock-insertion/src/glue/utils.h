@@ -30,7 +30,7 @@ LOCK_PROTO_LIST(ALLOWED_LOCK_TYPE)
 UNLOCK_PROTO_LIST(ALLOWED_LOCK_TYPE)
 DESTROY_PROTO_LIST(ALLOWED_LOCK_TYPE)
 
-void *alloc_cache_align(size_t n) {
+extern inline void *alloc_cache_align(size_t n) {
   void *res = 0;
   if ((MEMALIGN(&res, L_CACHE_LINE_SIZE, cache_align(n)) < 0) || !res) {
     fprintf(stderr, "MEMALIGN(%llu, %llu)", (unsigned long long)n,

@@ -28,8 +28,6 @@
       FE_2,FE_1,FE_0,                                                       \
   )(action,__VA_ARGS__)
 
-#define ALLOWED_LOCK_TYPE pthreadmtx, ttas, backoff
-
 typedef struct __attribute__((packed)) GenericInterface {
   void *entity;
   // dylinx_type has the same offset as __owners in
@@ -64,8 +62,6 @@ typedef struct __attribute__((packed)) GenericInterface {
 #define DYLINX_ENABLE_LOCK_LIST(...) FOR_EACH(dylinx_enable_func, __VA_ARGS__)
 #define dylinx_cast_func(ltype) dylinx_ ## ltype ## lock_t *: dylinx_ ## ltype ## lock_cast,
 #define DYLINX_CAST_LOCK_LIST(...) FOR_EACH(dylinx_cast_func, __VA_ARGS__)
-#define dylinx_union_proto(ltype) typedef union Dylinx ## ltype ## Lock dylinx_ ## ltype ## lock_t;
-#define DYLINX_UNION_PROTO_LIST(...) FOR_EACH(dylinx_union_proto, __VA_ARGS__)
 
 DYLINX_EXTERIOR_WRAPPER_PROTO(ttas)
 DYLINX_EXTERIOR_WRAPPER_PROTO(backoff);
@@ -81,7 +77,6 @@ void dummy_func(pthread_mutex_t *mtx, size_t len);
 void dylinx_degenerate_fill_array(generic_interface_t *mtx, size_t len);
 int dylinx_typeless_destroy(generic_interface_t *gen_lock);
 generic_interface_t *native_pthreadmtx_forward(pthread_mutex_t *mtx);
-// DYLINX_UNION_PROTO_LIST(ALLOWED_LOCK_TYPE)
 
 #define __dylinx_generic_fill_array_(entity, bytes) _Generic((entity),      \
   pthread_mutex_t *: dummy_func,                                            \
