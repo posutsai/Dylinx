@@ -30,6 +30,18 @@
   )(action,__VA_ARGS__)
 
 #define ALLOWED_LOCK_TYPE pthreadmtx, ttas, backoff
+#define COUNT_DOWN()                                                        \
+  11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1
+
+#define AVAILABLE_LOCK_TYPE_NUM(...)                                        \
+  GET_MACRO(__VA_ARGS__)
+
+#if AVAILABLE_LOCK_TYPE_NUM(ALLOWED_LOCK_TYPE, COUNT_DOWN()) > LOCK_TYPE_CNT
+
+#error                                                                      \
+Current number of available lock types isn't enough. Please reset           \
+LOCK_TYPE_CNT macro and corresponding macro definition.
+#endif
 
 typedef struct __attribute__((packed)) GenericInterface {
   void *entity;
