@@ -9,6 +9,8 @@
 #define __DYLINX_SYMBOL__
 #pragma clang diagnostic ignored "-Wincompatible-pointer-types"
 
+#define ALLOWED_LOCK_TYPE pthreadmtx, ttas, backoff
+
 #define FE_0(WHAT)
 #define FE_1(WHAT, X) WHAT(X)
 #define FE_2(WHAT, X, ...) WHAT(X)FE_1(WHAT, __VA_ARGS__)

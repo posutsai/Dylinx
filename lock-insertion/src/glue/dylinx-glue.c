@@ -2,13 +2,13 @@
 // Include all of the lock definition in lock directory.
 #include "lock/ttas-lock.h"
 #include "lock/backoff-lock.h"
+#include <errno.h>
+#include <string.h>
 
 #ifndef __DYLINX_GLUE__
 #define __DYLINX_GLUE__
 #define DYLINX_PTHREADMTX_ID 1
 #pragma clang diagnostic ignored "-Waddress-of-packed-member"
-
-#define ALLOWED_LOCK_TYPE pthreadmtx, ttas, backoff
 
 #define COUNT_DOWN()                                                        \
   11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1
@@ -31,14 +31,19 @@ int dylinx_lock_disable(void *lock) {
 int dylinx_lock_destroy(void *lock) {
   generic_interface_t *gen_lock = lock;
   int ret = gen_lock->methods->destroyer(&gen_lock->entity);
+  printf("return output of destroyer is %d\n", ret);
   pthread_mutex_destroy(gen_lock->cv_mtx);
-  assert(ret == 0);
+#ifdef __DYLINX_DEBUG__
+  if (ret)
+      perror(strerror(ret));
+#endif
   free(gen_lock->methods);
   return 1;
 }
 
 int dylinx_lock_condwait(pthread_cond_t *cond, void *lock) {
   generic_interface_t *gen_lock = lock;
+  gen_lock->methods->unlocker(&gen_lock->entity);
   return pthread_cond_wait(cond, gen_lock->cv_mtx);
 }
 

@@ -76,9 +76,15 @@ int pthreadmtx_init(void **entity, pthread_mutexattr_t *attr) {
   return pthread_mutex_init((pthread_mutex_t *)*entity, attr);
 }
 
-int pthreadmtx_lock(void **entity) { return pthread_mutex_lock((pthread_mutex_t *)*entity); }
-int pthreadmtx_unlock(void **entity) { return pthread_mutex_unlock((pthread_mutex_t *)*entity); }
-int pthreadmtx_destroy(void **entity) { return pthread_mutex_destroy((pthread_mutex_t *)*entity); }
+int pthreadmtx_lock(void **entity) {
+  return pthread_mutex_lock((pthread_mutex_t *)*entity);
+}
+int pthreadmtx_unlock(void **entity) {
+  return pthread_mutex_unlock((pthread_mutex_t *)*entity);
+}
+int pthreadmtx_destroy(void **entity) {
+  return pthread_mutex_destroy((pthread_mutex_t *)*entity);
+}
 
 #define LOCK_METHODS_AND_MTX(ltype)                                         \
   {                                                                         \
@@ -148,6 +154,7 @@ int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mute
     gen_lock->methods->locker = ltype ## _lock;                                                               \
     gen_lock->methods->unlocker = ltype ## _unlock;                                                           \
     gen_lock->methods->destroyer = ltype ## _destroy;                                                         \
+    gen_lock->cv_mtx = malloc(sizeof(pthread_mutex_t));                                                       \
     pthread_mutex_init(gen_lock->cv_mtx, NULL);                                                               \
     gen_lock->dylinx_type = NEGA(__dylinx_ ## ltype ## _ID);                                                  \
     pthread_mutex_unlock(&id2methods_table[__dylinx_ ## ltype ## _ID - 1].mtx);                               \
