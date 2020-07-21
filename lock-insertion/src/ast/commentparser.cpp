@@ -17,6 +17,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Casting.h"
 #include <iostream>
+#include <set>
 #include <tuple>
 #include <system_error>
 #include <filesystem>
@@ -36,14 +37,6 @@
 #define STRUCT_MEM_ALLOCA_TYPE "STRUCT_MEMBER"
 #define TYPEDEF_ALLOCA_TYPE "TYPEDEF"
 #define MEM_ALLOCA_TYPE "MALLOC"
-
-// TODO
-// 1. Implement the header file for definition of
-//    each lock and glue code. (Python Script)
-// 2. Copy all the dependency to the processing dir.
-// 3. If there is modifications in dependent headers,
-//    Dylinx should rename them to unique temp name
-//    and modify the code in "#include <....>" part.
 
 using namespace clang;
 using namespace llvm;
@@ -65,6 +58,9 @@ public:
   std::ofstream yaml_fout;
   YAML::Node lock_decl;
   uint32_t lock_i = 0;
+  fs::path runtime_conf;
+  std::set<std::tuple<std::string, uint32_t>> insert_struct;
+  fs::path temp_dir;
 private:
   Dylinx() {};
   ~Dylinx() {};
@@ -84,13 +80,9 @@ const Token *move2n_token(SourceLocation loc, uint32_t n, SourceManager& sm, con
   return token;
 }
 
-void replace_original_file(fs::path file_path, FileID fid, SourceManager& sm) {
-  fs::path parent = file_path.parent_path();
-  if (!fs::exists(parent / ".dylinx"))
-    fs::create_directory(parent / ".dylinx");
-  fs::rename(file_path, parent / ".dylinx" / file_path.filename());
+void write_modified_file(fs::path file_path, FileID fid, SourceManager& sm) {
   std::error_code err;
-  raw_fd_ostream fstream(file_path.string(), err);
+  raw_fd_ostream fstream((Dylinx::Instance().temp_dir / file_path.filename()).string(), err);
   Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
 }
 
@@ -112,7 +104,7 @@ YAML::Node parse_comment(std::string raw_text) {
   }
   return cmb;
 }
-
+  
 class FuncInterfaceMatchHandler: public MatchFinder::MatchCallback {
 public:
   FuncInterfaceMatchHandler() {}
@@ -276,6 +268,13 @@ public:
       sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
       Dylinx::Instance().rw_ptr->ReplaceText(loc, 15, format);
       YAML::Node decl_loc;
+      if (Dylinx::Instance().insert_struct.find(
+            std::make_tuple(
+              sm.getFileEntryForID(src_id)->getName().str(),
+              sm.getSpellingLineNumber(fd->getBeginLoc())
+            )
+          ) != Dylinx::Instance().insert_struct.end())
+        return;
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(fd))
         decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
       decl_loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
@@ -283,6 +282,12 @@ public:
       decl_loc["id"] = Dylinx::Instance().lock_i;
       decl_loc["modification_type"] = STRUCT_MEM_ALLOCA_TYPE;
       Dylinx::Instance().lock_i++;
+      Dylinx::Instance().insert_struct.insert(
+        std::make_tuple(
+          sm.getFileEntryForID(src_id)->getName().str(),
+          sm.getSpellingLineNumber(fd->getBeginLoc())
+        )
+      );
       Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
       Dylinx::Instance().altered_files.emplace(src_id);
     }
@@ -350,7 +355,6 @@ public:
       LocID key = std::make_pair(src_id, line);
       const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
       Dylinx::Instance().altered_files.emplace(src_id);
-      printf("altered id is %lu %s\n", sm.getFileID(loc), sm.getFileEntryForID(src_id)->getName().str().c_str());
       if (pvd) {
         Dylinx::Instance().rw_ptr->ReplaceText(pvd->getTypeSourceInfo()->getTypeLoc().getSourceRange(), "generic_interface_t *");
       } else if (Dylinx::Instance().last_altered_loc != key) {
@@ -537,7 +541,7 @@ public:
     for (iter = Dylinx::Instance().altered_files.begin(); iter != Dylinx::Instance().altered_files.end(); iter++) {
       std::string filename = sm.getFileEntryForID(*iter)->getName().str();
       Dylinx::Instance().rw_ptr->InsertText(sm.getLocForStartOfFile(*iter), "#include \"dylinx-glue.h\"\n");
-      replace_original_file(filename, *iter, sm);
+      write_modified_file(filename, *iter, sm);
     }
     delete Dylinx::Instance().rw_ptr;
     return;
@@ -571,10 +575,41 @@ std::unique_ptr<FrontendActionFactory> newSlotIdentificationActionFactory(
 int main(int argc, const char **argv) {
   std::string err;
   const char *compiler_db_path = argv[1];
+  fs::path revert = fs::path(std::string(argv[1])).parent_path() / ".dylinx";
   Dylinx::Instance().yaml_fout = std::ofstream(argv[2]);
+  const char *glue_env = std::getenv("DYLINX_GLUE_PATH");
+  if (!glue_env) {
+    fprintf(stderr, "[ERROR] It is required to set DYLINX_GLUE_PATH\n");
+    return -1;
+  }
+  Dylinx::Instance().runtime_conf = std::string(glue_env) + "/src/glue/dylinx-runtime-config.h";
+  Dylinx::Instance().temp_dir = fs::temp_directory_path() / ".dylinx-modified";
+  // Clean temporary directory
+  if (!fs::exists(Dylinx::Instance().temp_dir))
+    fs::create_directory(Dylinx::Instance().temp_dir);
+  else {
+    fs::remove_all(Dylinx::Instance().temp_dir);
+    fs::create_directory(Dylinx::Instance().temp_dir);
+  }
+
+  // Store original file for revert in the future
+  if (!fs::exists(revert))
+    fs::create_directory(revert);
+  else {
+    fs::remove_all(revert);
+    fs::create_directory(revert);
+  }
+
   std::shared_ptr<CompilationDatabase> compiler_db = CompilationDatabase::autoDetectFromSource(compiler_db_path, err);
   ClangTool tool(*compiler_db, compiler_db->getAllFiles());
   tool.run(newSlotIdentificationActionFactory(compiler_db).get());
+  YAML::Node updated_file = Dylinx::Instance().lock_decl["AlteredFiles"];
+  for (YAML::const_iterator it = updated_file.begin(); it != updated_file.end(); it++) {
+    fs::path u =  (*it).as<std::string>();
+    fs::copy(u, revert / u.filename());
+    fs::remove(u);
+    fs::copy(Dylinx::Instance().temp_dir / u.filename(), u);
+  }
   YAML::Emitter out;
   out << Dylinx::Instance().lock_decl;
   Dylinx::Instance().yaml_fout << out.c_str();
