@@ -40,7 +40,7 @@ def brute_force(cc_path, out_dir, build_inst, clean_inst):
     os.chdir(str(pathlib.PurePath(cc_path).parent))
     for comb in get_combination(f"{out_dir}/dylinx-insertion.yaml"):
         print(comb)
-        with open("{}/dylinx-runtime-config.h".format(os.environ["DYLINX_GLUE_PATH"]), "w") as rt_config:
+        with open("{}/src/glue/dylinx-runtime-config.h".format(os.environ["DYLINX_GLUE_PATH"]), "w") as rt_config:
             rt_config.write(f"{header_start}\n\n{comb}\n\n{header_end}")
         os.environ["C_INCLUDE_PATH"] = os.environ["DYLINX_GLUE_PATH"]
         with subprocess.Popen(args=build_inst.split(' '), stdout=subprocess.PIPE) as proc:
@@ -90,7 +90,7 @@ def fix_comb(args):
     comb = list(get_combination(f"{out_dir}/dylinx-insertion.yaml"))[args.fixed_comb]
     print(f"======== #{args.fixed_comb: 3d} combination ======")
     print(comb)
-    with open("{}/dylinx-runtime-config.h".format(os.environ["DYLINX_GLUE_PATH"]), "w") as rt_config:
+    with open("{}/src/glue/dylinx-runtime-config.h".format(os.environ["DYLINX_GLUE_PATH"]), "w") as rt_config:
         rt_config.write(f"{header_start}\n\n{comb}\n\n{header_end}")
     os.environ["C_INCLUDE_PATH"] = os.environ["DYLINX_GLUE_PATH"] + "/src/glue"
     os.environ["LD_LIBRARY_PATH"] = os.environ["DYLINX_GLUE_PATH"] + "/build/lib"

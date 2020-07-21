@@ -1,5 +1,5 @@
-#include "padding.h"
-#include "utils.h"
+#include "dylinx-padding.h"
+#include "dylinx-utils.h"
 #include <stdio.h>
 
 #ifndef __DYLINX_BACKOFF_LOCK__
@@ -23,8 +23,8 @@ int backoff_init(void **entity, pthread_mutexattr_t *attr) {
 #ifdef __DYLINX_DEBUG__
   printf("backoff-lock is initialized\n");
 #endif
+  (*entity) = (backoff_lock_t *)alloc_cache_align(sizeof(backoff_lock_t));
   backoff_lock_t *mtx = *entity;
-  mtx = (backoff_lock_t *)alloc_cache_align(sizeof(backoff_lock_t));
   mtx->spin_lock = UNLOCKED;
   return 0;
 }

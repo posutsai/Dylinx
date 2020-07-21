@@ -5,9 +5,10 @@
 // one should manually appending lock and
 // the corresponding string here.
 #define X(attr, str) str
-#define LOCK_LIST              \
-  X(ttas, "TTAS"),             \
-  X(pthreadmtx, "PTHREADMTX"),           \
+#define LOCK_LIST                         \
+  X(ttas, "TTAS"),                        \
+  X(pthreadmtx, "PTHREADMTX"),            \
+  X(backoff, "BACKOFF"),                  \
   X(spinlock, "SPINLOCK")
 
 std::string getLockPattern() {

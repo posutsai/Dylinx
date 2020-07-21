@@ -1,5 +1,5 @@
-#include "padding.h"
-#include "utils.h"
+#include "dylinx-padding.h"
+#include "dylinx-utils.h"
 #include <stdio.h>
 #ifndef __DYLINX_TTAS_LOCK__
 #define __DYLINX_TTAS_LOCK__
