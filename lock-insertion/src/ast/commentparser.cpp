@@ -58,8 +58,13 @@ public:
   std::ofstream yaml_fout;
   YAML::Node lock_decl;
   uint32_t lock_i = 0;
-  fs::path runtime_conf;
-  std::set<std::tuple<std::string, uint32_t>> insert_struct;
+  std::map<
+    std::string,
+    std::vector<uint32_t>
+  > lock_member_ids;
+  std::set<
+    std::tuple<std::string, std::string>
+  > inserted_member;
   fs::path temp_dir;
 private:
   Dylinx() {};
@@ -263,35 +268,74 @@ public:
       SourceManager& sm = result.Context->getSourceManager();
       SourceLocation loc = fd->getBeginLoc();
       FileID src_id = sm.getFileID(loc);
-      uint32_t line = sm.getSpellingLineNumber(loc);
+      std::string recr_name = fd->getParent()->getNameAsString();
+      recr_name = "struct " + recr_name;
+      std::string field_name = fd->getNameAsString();
+      if (Dylinx::Instance().inserted_member.find(
+            std::make_tuple(recr_name, field_name)
+          ) != Dylinx::Instance().inserted_member.end())
+        return;
       char format[50];
       sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
       Dylinx::Instance().rw_ptr->ReplaceText(loc, 15, format);
+      Dylinx::Instance().inserted_member.insert(
+        std::make_tuple(recr_name, field_name)
+      );
       YAML::Node decl_loc;
-      if (Dylinx::Instance().insert_struct.find(
-            std::make_tuple(
-              sm.getFileEntryForID(src_id)->getName().str(),
-              sm.getSpellingLineNumber(fd->getBeginLoc())
-            )
-          ) != Dylinx::Instance().insert_struct.end())
-        return;
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(fd))
         decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
       decl_loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
       decl_loc["line"] = sm.getSpellingLineNumber(fd->getBeginLoc());
       decl_loc["id"] = Dylinx::Instance().lock_i;
       decl_loc["modification_type"] = STRUCT_MEM_ALLOCA_TYPE;
+      if (Dylinx::Instance().lock_member_ids.find(recr_name) == Dylinx::Instance().lock_member_ids.end()) {
+        Dylinx::Instance().lock_member_ids[recr_name] = std::vector<uint32_t>();
+        Dylinx::Instance().lock_member_ids[recr_name].push_back(
+          Dylinx::Instance().lock_i
+        );
+      } else {
+        Dylinx::Instance().lock_member_ids[recr_name].push_back(
+          Dylinx::Instance().lock_i
+        );
+      }
       Dylinx::Instance().lock_i++;
-      Dylinx::Instance().insert_struct.insert(
-        std::make_tuple(
-          sm.getFileEntryForID(src_id)->getName().str(),
-          sm.getSpellingLineNumber(fd->getBeginLoc())
-        )
-      );
       Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
       Dylinx::Instance().altered_files.emplace(src_id);
     }
   }
+};
+
+class InitlistMatchHandler: public MatchFinder::MatchCallback {
+public:
+  InitlistMatchHandler() {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("struct_instance")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      std::string cur_loc = vd->getBeginLoc().printToString(sm);
+      if (cur_loc.compare(processed_loc) != 0) {
+        processed_loc = cur_loc;
+        std::string recr_name = vd->getType().getAsString();
+        cursor = 0;
+        ids = Dylinx::Instance().lock_member_ids[recr_name];
+      }
+    }
+    if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("struct_member_init")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      ASTContext *ast = result.Context;
+      SourceLocation begin_loc = init_expr->getLBraceLoc();
+      char format[100];
+      sprintf(format, "DYLINX_STRUCT_MEMBER_INIT_%d", ids[cursor]);
+      Dylinx::Instance().rw_ptr->ReplaceText(
+        sm.getImmediateExpansionRange(begin_loc).getAsRange(),
+        format
+      );
+      cursor++;
+    }
+  }
+private:
+  uint32_t cursor;
+  std::vector<uint32_t> ids;
+  std::string processed_loc;
 };
 
 class PtrRefMatchHandler: public MatchFinder::MatchCallback {
@@ -465,6 +509,19 @@ public:
       &handler_for_mem_alloca
     );
 
+    matcher.addMatcher(
+      varDecl(
+        hasType(recordDecl(
+          has(fieldDecl(hasType(asString("pthread_mutex_t"))))
+        )),
+        forEachDescendant(
+          initListExpr(hasSyntacticForm(
+            hasType(asString("pthread_mutex_t"))
+          )).bind("struct_member_init")
+        ))
+      .bind("struct_instance"),
+      &handler_for_initlist
+    );
 
     matcher.addMatcher(
       callExpr(eachOf(
@@ -513,6 +570,7 @@ private:
   TypedefMatchHandler handler_for_typedef;
   PtrRefMatchHandler handler_for_ref;
   StructFieldMatchHandler handler_for_struct;
+  InitlistMatchHandler handler_for_initlist;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
@@ -582,7 +640,6 @@ int main(int argc, const char **argv) {
     fprintf(stderr, "[ERROR] It is required to set DYLINX_GLUE_PATH\n");
     return -1;
   }
-  Dylinx::Instance().runtime_conf = std::string(glue_env) + "/src/glue/dylinx-runtime-config.h";
   Dylinx::Instance().temp_dir = fs::temp_directory_path() / ".dylinx-modified";
   // Clean temporary directory
   if (!fs::exists(Dylinx::Instance().temp_dir))
