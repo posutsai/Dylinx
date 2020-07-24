@@ -260,6 +260,20 @@ public:
   }
 };
 
+class RecordAliasMatchHandler: public MatchFinder::MatchCallback {
+public:
+  RecordAliasMatchHandler() {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const TypedefDecl *td = result.Nodes.getNodeAs<TypedefDecl>("record_alias")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      std::string recr_name = td->getUnderlyingType().getAsString();
+      std::string alias = td->getNameAsString();
+      printf("type is %s, alias = %s\n", td->getUnderlyingType().getAsString().c_str(), alias.c_str());
+      Dylinx::Instance().lock_member_ids[alias] = Dylinx::Instance().lock_member_ids[recr_name];
+    }
+  }
+};
+
 class StructFieldMatchHandler: public MatchFinder::MatchCallback {
 public:
   StructFieldMatchHandler() {}
@@ -510,6 +524,14 @@ public:
     );
 
     matcher.addMatcher(
+      fieldDecl(eachOf(
+        hasType(asString("pthread_mutex_t")),
+        hasType(asString("pthread_mutex_t *"))
+      )).bind("struct_members"),
+      &handler_for_struct
+    );
+
+    matcher.addMatcher(
       varDecl(
         hasType(recordDecl(
           has(fieldDecl(hasType(asString("pthread_mutex_t"))))
@@ -521,6 +543,13 @@ public:
         ))
       .bind("struct_instance"),
       &handler_for_initlist
+    );
+
+    matcher.addMatcher(
+      typedefDecl(hasType(qualType(hasDeclaration(
+        recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))
+        )))).bind("record_alias"),
+      &handler_for_record_alias
     );
 
     matcher.addMatcher(
@@ -539,14 +568,6 @@ public:
         hasAnyArgument(hasType(asString("pthread_mutex_t *")))
       ).bind("ptr_ref"),
       &handler_for_ref
-    );
-
-    matcher.addMatcher(
-      fieldDecl(eachOf(
-        hasType(asString("pthread_mutex_t")),
-        hasType(asString("pthread_mutex_t *"))
-      )).bind("struct_members"),
-      &handler_for_struct
     );
 
     matcher.matchAST(Context);
@@ -571,6 +592,7 @@ private:
   PtrRefMatchHandler handler_for_ref;
   StructFieldMatchHandler handler_for_struct;
   InitlistMatchHandler handler_for_initlist;
+  RecordAliasMatchHandler handler_for_record_alias;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
