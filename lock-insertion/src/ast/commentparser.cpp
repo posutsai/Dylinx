@@ -268,7 +268,6 @@ public:
       SourceManager& sm = result.Context->getSourceManager();
       std::string recr_name = td->getUnderlyingType().getAsString();
       std::string alias = td->getNameAsString();
-      printf("type is %s, alias = %s\n", td->getUnderlyingType().getAsString().c_str(), alias.c_str());
       Dylinx::Instance().lock_member_ids[alias] = Dylinx::Instance().lock_member_ids[recr_name];
     }
   }
@@ -533,9 +532,12 @@ public:
 
     matcher.addMatcher(
       varDecl(
-        hasType(recordDecl(
-          has(fieldDecl(hasType(asString("pthread_mutex_t"))))
-        )),
+        anyOf(
+          hasType(recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))),
+          hasType(typedefDecl(hasType(qualType(hasDeclaration(
+            recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))
+          )))))
+        ),
         forEachDescendant(
           initListExpr(hasSyntacticForm(
             hasType(asString("pthread_mutex_t"))
