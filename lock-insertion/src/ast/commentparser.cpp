@@ -52,7 +52,6 @@ public:
     static Dylinx dylinx;
     return dylinx;
   }
-  std::pair<FileID, uint32_t> last_altered_loc;
   Rewriter *rw_ptr;
   std::set<FileID> altered_files;
   std::ofstream yaml_fout;
@@ -401,32 +400,37 @@ class VarsMatchHandler: public MatchFinder::MatchCallback {
 public:
   VarsMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
-    // Take care to the varDecl in the function argument
     if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("vars")) {
       SourceManager& sm = result.Context->getSourceManager();
-      SourceLocation loc = d->getBeginLoc();
-      if (sm.isInSystemHeader(loc))
+      SourceLocation begin_loc = d->getBeginLoc();
+      SourceLocation init_loc = Lexer::findNextToken(
+        d->getEndLoc(),
+        sm,
+        result.Context->getLangOpts()
+      )->getLocation();
+      if (sm.isInSystemHeader(begin_loc))
         return;
-      FileID src_id = sm.getFileID(loc);
-      uint32_t line = sm.getSpellingLineNumber(loc);
+      FileID src_id = sm.getFileID(begin_loc);
+      uint32_t line = sm.getSpellingLineNumber(begin_loc);
       LocID key = std::make_pair(src_id, line);
-      const ParmVarDecl *pvd = dyn_cast<ParmVarDecl>(d);
       Dylinx::Instance().altered_files.emplace(src_id);
-      if (pvd) {
-        Dylinx::Instance().rw_ptr->ReplaceText(pvd->getTypeSourceInfo()->getTypeLoc().getSourceRange(), "generic_interface_t *");
-      } else if (Dylinx::Instance().last_altered_loc != key) {
+      // Take care when user declares their mutex in the same line.
+      // Ex:
+      //    pthread_mutex_t mtx1, mtx2;
+      if (processing_type_loc != key) {
         char format[50];
-        sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
+        sprintf(format, "DYLINX_LOCK_TYPE_%d", Dylinx::Instance().lock_i);
         if (d->getStorageClass() == StorageClass::SC_Static) {
-          SourceLocation loc = Lexer::findNextToken(
-            d->getBeginLoc(),
+          // Skip the "static" modifier
+          SourceLocation type_loc = Lexer::findNextToken(
+            begin_loc,
             sm,
             result.Context->getLangOpts()
-          )->getLocation();
-          Dylinx::Instance().rw_ptr->ReplaceText(loc, 15, format);
+          )->getEndLoc();
+          Dylinx::Instance().rw_ptr->ReplaceText(type_loc, 15, format);
         }
         else
-          Dylinx::Instance().rw_ptr->ReplaceText(d->getBeginLoc(), 15, format);
+          Dylinx::Instance().rw_ptr->ReplaceText(begin_loc, 15, format);
         YAML::Node decl_loc;
         if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
           decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
@@ -434,13 +438,24 @@ public:
         decl_loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
         decl_loc["id"] = Dylinx::Instance().lock_i;
         decl_loc["modification_type"] = VAR_ALLOCA_TYPE;
+        lock_cnt = Dylinx::Instance().lock_i;
+        processing_type_loc = key;
         Dylinx::Instance().lock_i++;
         Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
-        Dylinx::Instance().last_altered_loc = key;
-      } else
+      }
+      if (d->hasInit())
         return;
+      char format[50];
+      sprintf(format, " = DYLINX_LOCK_INIT_%d", lock_cnt);
+      Dylinx::Instance().rw_ptr->InsertText(init_loc, format);
+    }
+    if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
+      SourceManager& sm = result.Context->getSourceManager();
     }
   }
+private:
+  LocID processing_type_loc;
+  uint32_t lock_cnt;
 };
 
 class SlotIdentificationConsumer : public clang::ASTConsumer {
@@ -460,15 +475,23 @@ public:
     // and convert to
     //    BaseLock_t lock;
     //    BaseLock_t *lock;
+    // matcher.addMatcher(
+    //   varDecl(eachOf(
+    //     hasType(asString("pthread_mutex_t")),
+    //     hasType(asString("pthread_mutex_t *")),
+    //     hasType(arrayType(hasElementType(qualType(asString("pthread_mutex_t *")))))
+    //   )).bind("vars"),
+    //   &handler_for_vars
+    // );
+
     matcher.addMatcher(
-      varDecl(eachOf(
+      varDecl(
         hasType(asString("pthread_mutex_t")),
-        hasType(asString("pthread_mutex_t *")),
-        hasType(arrayType(hasElementType(qualType(asString("pthread_mutex_t *")))))
-      )).bind("vars"),
+        optionally(has(
+          initListExpr(hasSyntacticForm(hasType(asString("pthread_mutex_t")))).bind("init_macro")
+        ))).bind("vars"),
       &handler_for_vars
     );
-
     // Match all
     //    pthread_mutex_t locks[NUM_LOCK];
     // and convert them to
@@ -493,7 +516,7 @@ public:
     );
 
     // Match all
-    //    pthread_mutex_t *lock malloc(sizeof(pthread_mutex_t));
+    //    pthread_mutex_t *lock = malloc(sizeof(pthread_mutex_t));
     //    pthread_mutex_t *lock;
     //    lock = malloc(sizeof(pthread_mutex_t));
     // and convert them to
