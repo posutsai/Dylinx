@@ -108,7 +108,7 @@ YAML::Node parse_comment(std::string raw_text) {
   }
   return cmb;
 }
-  
+
 class FuncInterfaceMatchHandler: public MatchFinder::MatchCallback {
 public:
   FuncInterfaceMatchHandler() {}
@@ -125,7 +125,6 @@ public:
   }
 private:
   std::map<std::string, std::string>interface_LUT = {
-    {"pthread_mutex_init", "__dylinx_generic_init_"},
     {"pthread_mutex_lock", "__dylinx_generic_enable_"},
     {"pthread_mutex_unlock", "__dylinx_generic_disable_"},
     {"pthread_mutex_destroy", "__dylinx_generic_destroy_"},
@@ -133,9 +132,25 @@ private:
   };
 };
 
-class MemAllocaMatchHandler: public MatchFinder::MatchCallback {
+class MemberInitMatchHandler: public MatchFinder::MatchCallback {
 public:
-  MemAllocaMatchHandler() {}
+  MemberInitMatchHandler() {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("member_init_call")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      FileID src_id = sm.getFileID(e->getBeginLoc());
+      Dylinx::Instance().rw_ptr->ReplaceText(
+        e->getCallee()->getSourceRange(),
+        "__dylinx_member_init_"
+      );
+      Dylinx::Instance().altered_files.emplace(src_id);
+    }
+  }
+};
+
+class MallocMatchHandler: public MatchFinder::MatchCallback {
+public:
+  MallocMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
     const CallExpr *e;
     SourceManager& sm = result.Context->getSourceManager();
@@ -526,7 +541,7 @@ public:
             hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
           )).bind("malloc_decl_callexpr")
         ))).bind("malloc_decl"),
-      &handler_for_mem_alloca
+      &handler_for_malloc
     );
 
     matcher.addMatcher(
@@ -538,7 +553,7 @@ public:
           hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
         )).bind("malloc_assign_callexpr")))
       ).bind("malloc_assign"),
-      &handler_for_mem_alloca
+      &handler_for_malloc
     );
 
     matcher.addMatcher(
@@ -577,11 +592,27 @@ public:
       callExpr(eachOf(
         callee(functionDecl(hasName("pthread_mutex_lock"))),
         callee(functionDecl(hasName("pthread_mutex_unlock"))),
-        callee(functionDecl(hasName("pthread_mutex_init"))),
         callee(functionDecl(hasName("pthread_mutex_destroy"))),
         callee(functionDecl(hasName("pthread_cond_wait")))
       )).bind("interfaces"),
       &handler_for_interface
+    );
+
+    matcher.addMatcher(
+      callExpr(
+        callee(functionDecl(hasName("pthread_mutex_init"))),
+        hasArgument(0, hasDescendant(declRefExpr(
+          hasType(qualType(
+            hasDeclaration(anyOf(
+              recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t"))))),
+              typedefDecl(hasType(qualType(hasDeclaration(
+                recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))
+              ))))
+            ))
+          ))
+        )))
+      ).bind("member_init_call"),
+      &handler_for_member_init
     );
 
     matcher.addMatcher(
@@ -607,13 +638,14 @@ private:
   MatchFinder matcher;
   FuncInterfaceMatchHandler handler_for_interface;
   VarsMatchHandler handler_for_vars;
-  MemAllocaMatchHandler handler_for_mem_alloca;
+  MallocMatchHandler handler_for_malloc;
   ArrayMatchHandler handler_for_array;
   TypedefMatchHandler handler_for_typedef;
   PtrRefMatchHandler handler_for_ref;
   StructFieldMatchHandler handler_for_struct;
   InitlistMatchHandler handler_for_initlist;
   RecordAliasMatchHandler handler_for_record_alias;
+  MemberInitMatchHandler handler_for_member_init;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
