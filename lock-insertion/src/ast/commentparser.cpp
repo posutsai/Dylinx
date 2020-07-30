@@ -333,7 +333,6 @@ public:
     }
     if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("struct_member_init")) {
       SourceManager& sm = result.Context->getSourceManager();
-      ASTContext *ast = result.Context;
       SourceLocation begin_loc = init_expr->getLBraceLoc();
       char format[100];
       sprintf(format, "DYLINX_STRUCT_MEMBER_INIT_%d", ids[cursor]);
@@ -400,6 +399,16 @@ class VarsMatchHandler: public MatchFinder::MatchCallback {
 public:
   VarsMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
+    if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      SourceLocation begin_loc = init_expr->getLBraceLoc();
+      char format[100];
+      sprintf(format, "DYLINX_LOCK_INIT_%d", Dylinx::Instance().lock_i);
+      Dylinx::Instance().rw_ptr->ReplaceText(
+        sm.getImmediateExpansionRange(begin_loc).getAsRange(),
+        format
+      );
+    }
     if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("vars")) {
       SourceManager& sm = result.Context->getSourceManager();
       SourceLocation begin_loc = d->getBeginLoc();
@@ -449,9 +458,6 @@ public:
       sprintf(format, " = DYLINX_LOCK_INIT_%d", lock_cnt);
       Dylinx::Instance().rw_ptr->InsertText(init_loc, format);
     }
-    if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
-      SourceManager& sm = result.Context->getSourceManager();
-    }
   }
 private:
   LocID processing_type_loc;
@@ -471,19 +477,9 @@ public:
     Dylinx::Instance().rw_ptr->setSourceMgr(sm, opts);
     // Match all
     //    pthread_mutex_t mutex;
-    //    pthread_mutex_t *mutex_ptr;
+    //    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
     // and convert to
-    //    BaseLock_t lock;
-    //    BaseLock_t *lock;
-    // matcher.addMatcher(
-    //   varDecl(eachOf(
-    //     hasType(asString("pthread_mutex_t")),
-    //     hasType(asString("pthread_mutex_t *")),
-    //     hasType(arrayType(hasElementType(qualType(asString("pthread_mutex_t *")))))
-    //   )).bind("vars"),
-    //   &handler_for_vars
-    // );
-
+    //    DYLINX_LOCK_TYPE_1 lock = DYLINX_LOCK_INIT_1;
     matcher.addMatcher(
       varDecl(
         hasType(asString("pthread_mutex_t")),
