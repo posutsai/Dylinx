@@ -125,6 +125,7 @@ public:
   }
 private:
   std::map<std::string, std::string>interface_LUT = {
+    {"pthread_mutex_init", "__dylinx_check_var_"},
     {"pthread_mutex_lock", "__dylinx_generic_enable_"},
     {"pthread_mutex_unlock", "__dylinx_generic_disable_"},
     {"pthread_mutex_destroy", "__dylinx_generic_destroy_"},
@@ -592,6 +593,17 @@ public:
       callExpr(eachOf(
         callee(functionDecl(hasName("pthread_mutex_lock"))),
         callee(functionDecl(hasName("pthread_mutex_unlock"))),
+        allOf(
+          callee(functionDecl(hasName("pthread_mutex_init"))),
+          hasArgument(0, hasDescendant(declRefExpr(
+            hasType(qualType(
+              anyOf(
+                asString("pthread_mutex_t"),
+                hasDeclaration(typedefDecl(hasType(asString("pthread_mutex_t"))))
+              )
+            ))
+          )))
+        ),
         callee(functionDecl(hasName("pthread_mutex_destroy"))),
         callee(functionDecl(hasName("pthread_cond_wait")))
       )).bind("interfaces"),
