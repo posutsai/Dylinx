@@ -415,18 +415,9 @@ class VarsMatchHandler: public MatchFinder::MatchCallback {
 public:
   VarsMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
-    if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
-      SourceManager& sm = result.Context->getSourceManager();
-      SourceLocation begin_loc = init_expr->getLBraceLoc();
-      char format[100];
-      sprintf(format, "DYLINX_LOCK_INIT_%d", Dylinx::Instance().lock_i);
-      Dylinx::Instance().rw_ptr->ReplaceText(
-        sm.getImmediateExpansionRange(begin_loc).getAsRange(),
-        format
-      );
-    }
     if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("vars")) {
       SourceManager& sm = result.Context->getSourceManager();
+      // Dealing with Type information
       SourceLocation begin_loc = d->getBeginLoc();
       SourceLocation init_loc = Lexer::findNextToken(
         d->getEndLoc(),
@@ -446,12 +437,7 @@ public:
         char format[50];
         sprintf(format, "DYLINX_LOCK_TYPE_%d", Dylinx::Instance().lock_i);
         if (d->getStorageClass() == StorageClass::SC_Static) {
-          // Skip the "static" modifier
-          SourceLocation type_loc = Lexer::findNextToken(
-            begin_loc,
-            sm,
-            result.Context->getLangOpts()
-          )->getEndLoc();
+          SourceLocation type_loc = move2n_token(begin_loc, 1, sm, result.Context->getLangOpts())->getLocation();
           Dylinx::Instance().rw_ptr->ReplaceText(type_loc, 15, format);
         }
         else
@@ -468,8 +454,30 @@ public:
         Dylinx::Instance().lock_i++;
         Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
       }
-      if (d->hasInit())
+
+      // Dealing with initialization
+      if (d->hasInit() && !d->isStaticLocal() && d->hasGlobalStorage()) {
+        uint32_t skip = d->getStorageClass() == StorageClass::SC_Static? 2: 1;
+        const Token *var_name = move2n_token(d->getBeginLoc(), skip, sm, result.Context->getLangOpts());
+        Dylinx::Instance().rw_ptr->RemoveText(
+          SourceRange(
+            var_name->getLocation().getLocWithOffset(d->getNameAsString().length()),
+            sm.getImmediateExpansionRange(d->getEndLoc()).getAsRange().getEnd()
+          )
+        );
         return;
+      } else if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
+        SourceManager& sm = result.Context->getSourceManager();
+        SourceLocation begin_loc = init_expr->getLBraceLoc();
+        char format[100];
+        sprintf(format, "DYLINX_LOCK_INIT_%d", Dylinx::Instance().lock_i);
+        Dylinx::Instance().rw_ptr->ReplaceText(
+            sm.getImmediateExpansionRange(begin_loc).getAsRange(),
+            format
+            );
+        printf("initListExpr processed !!!\n");
+        return;
+      }
       char format[50];
       sprintf(format, " = DYLINX_LOCK_INIT_%d", lock_cnt);
       Dylinx::Instance().rw_ptr->InsertText(init_loc, format);
