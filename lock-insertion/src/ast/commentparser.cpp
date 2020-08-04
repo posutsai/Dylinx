@@ -65,6 +65,7 @@ public:
     std::tuple<std::string, std::string>
   > inserted_member;
   fs::path temp_dir;
+  std::pair<std::string, uint32_t> extra_init4cu{"", 0};
 private:
   Dylinx() {};
   ~Dylinx() {};
@@ -430,6 +431,7 @@ public:
       uint32_t line = sm.getSpellingLineNumber(begin_loc);
       LocID key = std::make_pair(src_id, line);
       Dylinx::Instance().altered_files.emplace(src_id);
+      YAML::Node decl_loc;
       // Take care when user declares their mutex in the same line.
       // Ex:
       //    pthread_mutex_t mtx1, mtx2;
@@ -442,7 +444,6 @@ public:
         }
         else
           Dylinx::Instance().rw_ptr->ReplaceText(begin_loc, 15, format);
-        YAML::Node decl_loc;
         if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
           decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
         decl_loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
@@ -452,10 +453,13 @@ public:
         lock_cnt = Dylinx::Instance().lock_i;
         processing_type_loc = key;
         Dylinx::Instance().lock_i++;
-        Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
       }
 
       // Dealing with initialization
+      printf(
+        "%s hasInit=%d, isStaticLocal=%d, hasGlobalStorage=%d\n",
+        d->getNameAsString().c_str(), d->hasInit(), d->isStaticLocal(), d->hasGlobalStorage()
+      );
       if (d->hasInit() && !d->isStaticLocal() && d->hasGlobalStorage()) {
         uint32_t skip = d->getStorageClass() == StorageClass::SC_Static? 2: 1;
         const Token *var_name = move2n_token(d->getBeginLoc(), skip, sm, result.Context->getLangOpts());
@@ -465,6 +469,14 @@ public:
             sm.getImmediateExpansionRange(d->getEndLoc()).getAsRange().getEnd()
           )
         );
+        printf("hash value is %s, %s\n", sm.getFileEntryForID(sm.getMainFileID())->getName().str().c_str(), Dylinx::Instance().extra_init4cu.first.c_str());
+        decl_loc["extra_init"] = Dylinx::Instance().extra_init4cu.second;
+        if (sm.getFileEntryForID(sm.getMainFileID())->getName().str().compare(Dylinx::Instance().extra_init4cu.first) != 0) {
+          Dylinx::Instance().extra_init4cu.second++;
+          Dylinx::Instance().extra_init4cu.first = sm.getFileEntryForID(sm.getMainFileID())->getName().str();
+          printf("modified to %s\n", Dylinx::Instance().extra_init4cu.first.c_str());
+        }
+        Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
         return;
       } else if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
         SourceManager& sm = result.Context->getSourceManager();
@@ -475,12 +487,13 @@ public:
             sm.getImmediateExpansionRange(begin_loc).getAsRange(),
             format
             );
-        printf("initListExpr processed !!!\n");
+        Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
         return;
       }
       char format[50];
       sprintf(format, " = DYLINX_LOCK_INIT_%d", lock_cnt);
       Dylinx::Instance().rw_ptr->InsertText(init_loc, format);
+      Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
     }
   }
 private:
@@ -494,7 +507,6 @@ public:
   const LangOptions& opts;
   explicit SlotIdentificationConsumer(ASTContext *Context, const LangOptions& opts): opts{opts} {}
   virtual void HandleTranslationUnit(clang::ASTContext &Context) {
-
     SourceManager& sm = Context.getSourceManager();
     Dylinx::Instance().altered_files.clear();
     Dylinx::Instance().rw_ptr = new Rewriter;
@@ -654,7 +666,6 @@ public:
       );
   }
 private:
-  uint32_t mark_i = 0;
   MatchFinder matcher;
   FuncInterfaceMatchHandler handler_for_interface;
   VarsMatchHandler handler_for_vars;
