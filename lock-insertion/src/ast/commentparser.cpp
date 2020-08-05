@@ -469,12 +469,11 @@ public:
             sm.getImmediateExpansionRange(d->getEndLoc()).getAsRange().getEnd()
           )
         );
-        printf("hash value is %s, %s\n", sm.getFileEntryForID(sm.getMainFileID())->getName().str().c_str(), Dylinx::Instance().extra_init4cu.first.c_str());
         decl_loc["extra_init"] = Dylinx::Instance().extra_init4cu.second;
-        if (sm.getFileEntryForID(sm.getMainFileID())->getName().str().compare(Dylinx::Instance().extra_init4cu.first) != 0) {
+        decl_loc["name"] = d->getNameAsString();
+        if (sm.getFileEntryForID(sm.getMainFileID())->getName().str().compare(Dylinx::Instance().extra_init4cu.first)) {
           Dylinx::Instance().extra_init4cu.second++;
           Dylinx::Instance().extra_init4cu.first = sm.getFileEntryForID(sm.getMainFileID())->getName().str();
-          printf("modified to %s\n", Dylinx::Instance().extra_init4cu.first.c_str());
         }
         Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
         return;
@@ -701,12 +700,38 @@ public:
     // Manually add the definition of BaseLock, slot_lock and
     // slot_unlock here.
     SourceManager &sm = Dylinx::Instance().rw_ptr->getSourceMgr();
+    if (!sm.getFileEntryForID(sm.getMainFileID())->getName().str().compare(Dylinx::Instance().extra_init4cu.first)) {
+      SourceLocation end = sm.getLocForEndOfFile(sm.getMainFileID());
+      char prototype[100];
+      sprintf(
+        prototype,
+        "void __dylinx_global_mutex_init_%d_() {\n",
+        Dylinx::Instance().extra_init4cu.second
+      );
+      std::string global_initializer(prototype);
+      YAML::Node entity = Dylinx::Instance().lock_decl["LockEntity"];
+      for (YAML::const_iterator it = entity.begin(); it != entity.end(); it++) {
+        const YAML::Node& entity = *it;
+        if (entity["extra_init"] && entity["extra_init"].as<uint32_t>() == Dylinx::Instance().extra_init4cu.second - 1) {
+          char init_mtx[50];
+          sprintf(init_mtx, "__dylinx_member_init_(&%s, NULL);\n", entity["name"].as<std::string>().c_str());
+          global_initializer.append(init_mtx);
+        }
+      }
+      global_initializer.append("}");
+      Dylinx::Instance().rw_ptr->InsertText(
+        end,
+        global_initializer
+      );
+      Dylinx::Instance().altered_files.emplace(sm.getMainFileID());
+    }
     std::set<FileID>::iterator iter;
     for (iter = Dylinx::Instance().altered_files.begin(); iter != Dylinx::Instance().altered_files.end(); iter++) {
       std::string filename = sm.getFileEntryForID(*iter)->getName().str();
       Dylinx::Instance().rw_ptr->InsertText(sm.getLocForStartOfFile(*iter), "#include \"dylinx-glue.h\"\n");
       write_modified_file(filename, *iter, sm);
     }
+    Dylinx::Instance().rw_ptr->overwriteChangedFiles();
     delete Dylinx::Instance().rw_ptr;
     return;
   }
