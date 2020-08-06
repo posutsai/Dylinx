@@ -469,12 +469,12 @@ public:
             sm.getImmediateExpansionRange(d->getEndLoc()).getAsRange().getEnd()
           )
         );
-        decl_loc["extra_init"] = Dylinx::Instance().extra_init4cu.second;
-        decl_loc["name"] = d->getNameAsString();
         if (sm.getFileEntryForID(sm.getMainFileID())->getName().str().compare(Dylinx::Instance().extra_init4cu.first)) {
           Dylinx::Instance().extra_init4cu.second++;
           Dylinx::Instance().extra_init4cu.first = sm.getFileEntryForID(sm.getMainFileID())->getName().str();
         }
+        decl_loc["extra_init"] = Dylinx::Instance().extra_init4cu.second;
+        decl_loc["name"] = d->getNameAsString();
         Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
         return;
       } else if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
@@ -712,9 +712,10 @@ public:
       YAML::Node entity = Dylinx::Instance().lock_decl["LockEntity"];
       for (YAML::const_iterator it = entity.begin(); it != entity.end(); it++) {
         const YAML::Node& entity = *it;
-        if (entity["extra_init"] && entity["extra_init"].as<uint32_t>() == Dylinx::Instance().extra_init4cu.second - 1) {
+        if (entity["extra_init"] && entity["extra_init"].as<uint32_t>() == Dylinx::Instance().extra_init4cu.second) {
           char init_mtx[50];
-          sprintf(init_mtx, "__dylinx_member_init_(&%s, NULL);\n", entity["name"].as<std::string>().c_str());
+          sprintf(init_mtx, "\t__dylinx_member_init_(&%s, NULL);\n", entity["name"].as<std::string>().c_str());
+          printf("%s %u\n", init_mtx, Dylinx::Instance().extra_init4cu.second);
           global_initializer.append(init_mtx);
         }
       }
@@ -731,7 +732,6 @@ public:
       Dylinx::Instance().rw_ptr->InsertText(sm.getLocForStartOfFile(*iter), "#include \"dylinx-glue.h\"\n");
       write_modified_file(filename, *iter, sm);
     }
-    Dylinx::Instance().rw_ptr->overwriteChangedFiles();
     delete Dylinx::Instance().rw_ptr;
     return;
   }
