@@ -366,6 +366,24 @@ private:
   std::string processed_loc;
 };
 
+class EntryMatchHandler: public MatchFinder::MatchCallback {
+public:
+  EntryMatchHandler() {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const FunctionDecl *fd = result.Nodes.getNodeAs<FunctionDecl>("entry")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      CompoundStmt *main_body = dyn_cast<CompoundStmt>(fd->getBody());
+      SourceLocation scope_start = main_body->getLBracLoc();
+      Dylinx::Instance().rw_ptr->InsertText(
+        scope_start.getLocWithOffset(1),
+        "\n\t__dylinx_global_mtx_init();\n"
+      );
+      FileID src_id = sm.getFileID(scope_start);
+      Dylinx::Instance().altered_files.emplace(src_id);
+    }
+  }
+};
+
 class PtrRefMatchHandler: public MatchFinder::MatchCallback {
 public:
   PtrRefMatchHandler() {}
@@ -647,6 +665,11 @@ public:
     );
 
     matcher.addMatcher(
+      functionDecl(hasName("main")).bind("entry"),
+      &handler_for_entry
+    );
+
+    matcher.addMatcher(
       callExpr(
         hasAnyArgument(hasType(asString("pthread_mutex_t *")))
       ).bind("ptr_ref"),
@@ -676,6 +699,7 @@ private:
   InitlistMatchHandler handler_for_initlist;
   RecordAliasMatchHandler handler_for_record_alias;
   MemberInitMatchHandler handler_for_member_init;
+  EntryMatchHandler handler_for_entry;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
@@ -705,7 +729,7 @@ public:
       char prototype[100];
       sprintf(
         prototype,
-        "void __dylinx_global_mutex_init_%d_() {\n",
+        "void __dylinx_cu_init_%d_() {\n",
         Dylinx::Instance().extra_init4cu.second
       );
       std::string global_initializer(prototype);
