@@ -376,7 +376,7 @@ public:
       SourceLocation scope_start = main_body->getLBracLoc();
       Dylinx::Instance().rw_ptr->InsertText(
         scope_start.getLocWithOffset(1),
-        "\n\t__dylinx_global_mtx_init();\n"
+        "\n\t__dylinx_global_mtx_init_();\n"
       );
       FileID src_id = sm.getFileID(scope_start);
       Dylinx::Instance().altered_files.emplace(src_id);

@@ -19,6 +19,14 @@ typedef struct backoff_lock {
   char __pad[pad_to_cache_line(sizeof(uint8_t))];
 } backoff_lock_t __attribute__((aligned(L_CACHE_LINE_SIZE)));
 
+#define BACKOFF_LOCK_INITIALIZER {                                            \
+  malloc(backoff_lock_t),                                                     \
+  backoff_init,                                                               \
+  backoff_lock,                                                               \
+  backoff_unlock,                                                             \
+  backoff_destroy                                                             \
+}
+
 int backoff_init(void **entity, pthread_mutexattr_t *attr) {
 #ifdef __DYLINX_DEBUG__
   printf("backoff-lock is initialized\n");
@@ -39,7 +47,6 @@ int backoff_lock(void **entity) {
       if (delay < MAX_BACKOFF_DELAY)
         delay *= 2;
     }
-
     if (l_tas_uint8(&mtx->spin_lock) == UNLOCKED)
       break;
   }

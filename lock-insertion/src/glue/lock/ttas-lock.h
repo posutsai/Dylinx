@@ -50,6 +50,10 @@ int ttas_destroy(void **entity) {
   return 1;
 }
 
+int ttas_condwait(pthread_cond_t *cond, void **entity) {
+  return 1;
+}
+
 DYLINX_EXTERIOR_WRAPPER_IMPLE(ttas, 2);
 
 #endif
