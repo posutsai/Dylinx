@@ -474,15 +474,17 @@ public:
       }
 
       // Dealing with initialization
-      if (d->hasInit() && !d->isStaticLocal() && d->hasGlobalStorage()) {
+      if (!d->isStaticLocal() && d->hasGlobalStorage()) {
         uint32_t skip = d->getStorageClass() == StorageClass::SC_Static? 2: 1;
         const Token *var_name = move2n_token(d->getBeginLoc(), skip, sm, result.Context->getLangOpts());
-        Dylinx::Instance().rw_ptr->RemoveText(
-          SourceRange(
-            var_name->getLocation().getLocWithOffset(d->getNameAsString().length()),
-            sm.getImmediateExpansionRange(d->getEndLoc()).getAsRange().getEnd()
-          )
-        );
+        if (d->hasInit()) {
+          Dylinx::Instance().rw_ptr->RemoveText(
+            SourceRange(
+              var_name->getLocation().getLocWithOffset(d->getNameAsString().length()),
+              sm.getImmediateExpansionRange(d->getEndLoc()).getAsRange().getEnd()
+            )
+          );
+        }
         if (sm.getFileEntryForID(sm.getMainFileID())->getName().str().compare(Dylinx::Instance().extra_init4cu.first)) {
           Dylinx::Instance().extra_init4cu.second++;
           Dylinx::Instance().extra_init4cu.first = sm.getFileEntryForID(sm.getMainFileID())->getName().str();
