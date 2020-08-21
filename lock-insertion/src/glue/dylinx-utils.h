@@ -22,10 +22,10 @@
 #define HANDLING_ERROR(msg)                                                   \
   do {                                                                        \
     printf(                                                                   \
-      "%s [%s in %s:%d]",                                                     \
-      msg, __FUNCTION__, __FILE__, __LINE__                                   \
+      "=============== [%s in %s:%d] ===============\n%s\n",                  \
+      __FUNCTION__, __FILE__, __LINE__, msg                                   \
     );                                                                        \
-    exit(-1);                                                                 \
+    assert(0);                                                                \
   } while(0)
 
 INIT_PROTO_LIST(ALLOWED_LOCK_TYPE)
@@ -74,10 +74,11 @@ int pthreadmtx_unlock(void **entity) {
 int pthreadmtx_destroy(void **entity) {
   return pthread_mutex_destroy((pthread_mutex_t *)*entity);
 }
+int pthreadmtx_condwait(pthread_cond_t *cond, void **entity) {}
 // }}}
 
 #define COMPILER_BARRIER() __asm__ __volatile__("" : : : "memory")
-#define DYLINX_EXTERIOR_WRAPPER_IMPLE(ltype, num)                                                             \
+#define DYLINX_EXTERIOR_WRAPPER_IMPLE(ltype)                                                             \
 int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mutexattr_t *attr) {              \
   generic_interface_t *gen_lock = (generic_interface_t *)lock;                                                \
   gen_lock->initializer = ltype ## _init;                                                                     \

@@ -5,6 +5,8 @@
 #ifndef __DYLINX_BACKOFF_LOCK__
 #define __DYLINX_BACKOFF_LOCK__
 
+#define DYLINX_BACKOFF_INITIALIZER { malloc(sizeof(backoff_lock_t)), backoff_init, backoff_lock, backoff_unlock, backoff_destroy, backoff_condwait }
+
 // Source code implementation refers to following two places.
 // 1. backoff-lock implementation in LITL
 // https://github.com/multicore-locks/litl/blob/master/src/backoff.c
@@ -34,6 +36,9 @@ int backoff_init(void **entity, pthread_mutexattr_t *attr) {
   (*entity) = (backoff_lock_t *)alloc_cache_align(sizeof(backoff_lock_t));
   backoff_lock_t *mtx = *entity;
   mtx->spin_lock = UNLOCKED;
+#ifdef COND_VAR
+  pthread_mutex_init(&mtx->posix_lock);
+#endif
   return 0;
 }
 
@@ -66,5 +71,7 @@ int backoff_destroy(void **entity) {
   return 1;
 }
 
-DYLINX_EXTERIOR_WRAPPER_IMPLE(backoff, 3);
+int backoff_condwait(pthread_cond_t *cond, void **entity) {}
+
+DYLINX_EXTERIOR_WRAPPER_IMPLE(backoff);
 #endif

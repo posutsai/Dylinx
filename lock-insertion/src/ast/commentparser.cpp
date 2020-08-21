@@ -474,10 +474,6 @@ public:
       }
 
       // Dealing with initialization
-      printf(
-        "%s hasInit=%d, isStaticLocal=%d, hasGlobalStorage=%d\n",
-        d->getNameAsString().c_str(), d->hasInit(), d->isStaticLocal(), d->hasGlobalStorage()
-      );
       if (d->hasInit() && !d->isStaticLocal() && d->hasGlobalStorage()) {
         uint32_t skip = d->getStorageClass() == StorageClass::SC_Static? 2: 1;
         const Token *var_name = move2n_token(d->getBeginLoc(), skip, sm, result.Context->getLangOpts());
@@ -739,7 +735,6 @@ public:
         if (entity["extra_init"] && entity["extra_init"].as<uint32_t>() == Dylinx::Instance().extra_init4cu.second) {
           char init_mtx[50];
           sprintf(init_mtx, "\t__dylinx_member_init_(&%s, NULL);\n", entity["name"].as<std::string>().c_str());
-          printf("%s %u\n", init_mtx, Dylinx::Instance().extra_init4cu.second);
           global_initializer.append(init_mtx);
         }
       }
@@ -790,9 +785,9 @@ int main(int argc, const char **argv) {
   const char *compiler_db_path = argv[1];
   fs::path revert = fs::path(std::string(argv[1])).parent_path() / ".dylinx";
   Dylinx::Instance().yaml_fout = std::ofstream(argv[2]);
-  const char *glue_env = std::getenv("DYLINX_GLUE_PATH");
+  const char *glue_env = std::getenv("DYLINX_HOME");
   if (!glue_env) {
-    fprintf(stderr, "[ERROR] It is required to set DYLINX_GLUE_PATH\n");
+    fprintf(stderr, "[ERROR] It is required to set DYLINX_HOME\n");
     return -1;
   }
   Dylinx::Instance().temp_dir = fs::temp_directory_path() / ".dylinx-modified";

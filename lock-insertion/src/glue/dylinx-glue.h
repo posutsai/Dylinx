@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
-#include "dylinx-runtime-config.h"
+#include "runtime/dylinx-runtime-config.h"
 
 #ifndef __DYLINX_SYMBOL__
 #define __DYLINX_SYMBOL__
@@ -32,23 +32,31 @@
 
 typedef struct __attribute__((packed)) GenericInterface {
   void *entity;
-  int (*initializer)(void *, const pthread_mutexattr_t *);
-  int (*locker)(void *);
-  int (*unlocker)(void *);
-  int (*finalizer)(void *);
-  int (*cond_waiter)(pthread_cond_t *, void *);
+  int (*initializer)(void **, pthread_mutexattr_t *);
+  int (*locker)(void **);
+  int (*unlocker)(void **);
+  int (*finalizer)(void **);
+  int (*cond_waiter)(pthread_cond_t *, void **);
 } generic_interface_t;
 
 #define DYLINX_EXTERIOR_WRAPPER_PROTO(ltype)                                                                  \
   typedef union Dylinx ## ltype ## Lock {                                                                     \
-    pthread_mutex_t dummy_lock;                                                                               \
     generic_interface_t interface;                                                                            \
+    pthread_mutex_t dummy_lock;                                                                               \
   } dylinx_ ## ltype ## lock_t;                                                                               \
-  int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *, pthread_mutexattr_t *);
+  int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *, pthread_mutexattr_t *);\
+  int ltype ## _init(void **, pthread_mutexattr_t *);\
+  int ltype ## _lock(void **);\
+  int ltype ## _unlock(void **);\
+  int ltype ## _destroy(void **);\
+  int ltype ## _condwait(pthread_cond_t *, void **);
 
 DYLINX_EXTERIOR_WRAPPER_PROTO(ttas)
 DYLINX_EXTERIOR_WRAPPER_PROTO(backoff);
 DYLINX_EXTERIOR_WRAPPER_PROTO(pthreadmtx);
+
+#define DYLINX_BACKOFF_INITIALIZER { malloc(sizeof(backoff_lock_t)), backoff_init, backoff_lock, backoff_unlock, backoff_destroy, backoff_condwait }
+#define DYLINX_TTAS_INITIALIZER { malloc(sizeof(ttas_lock_t)), ttas_init, ttas_lock, ttas_unlock, ttas_destroy, ttas_condwait }
 
 int dylinx_error_init(generic_interface_t *);
 int dylinx_error_disable(generic_interface_t *);

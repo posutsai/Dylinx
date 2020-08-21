@@ -91,5 +91,5 @@ int dylinx_forward_condwait(pthread_cond_t *cond, generic_interface_t *lock) {
 }
 // }}}
 
-DYLINX_EXTERIOR_WRAPPER_IMPLE(pthreadmtx, 1);
+DYLINX_EXTERIOR_WRAPPER_IMPLE(pthreadmtx);
 #endif // __DYLINX_GLUE__
