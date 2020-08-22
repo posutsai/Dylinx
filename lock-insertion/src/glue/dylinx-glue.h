@@ -59,12 +59,14 @@ DYLINX_EXTERIOR_WRAPPER_PROTO(pthreadmtx);
 #define DYLINX_TTAS_INITIALIZER { malloc(sizeof(ttas_lock_t)), ttas_init, ttas_lock, ttas_unlock, ttas_destroy, ttas_condwait }
 
 int dylinx_error_init(generic_interface_t *);
+int dylinx_error_enable(generic_interface_t *);
 int dylinx_error_disable(generic_interface_t *);
-int dylinx_error_destroy(generic_interface_t *lock);
+int dylinx_error_destroy(generic_interface_t *);
 int dylinx_error_condwait(pthread_cond_t *cond, generic_interface_t *mtx);
 int dylinx_forward_enable(generic_interface_t *gen_lock);
 int dylinx_forward_disable(generic_interface_t *gen_lock);
 int dylinx_forward_destroy(generic_interface_t *gen_lock);
+int dylinx_forward_condwait(pthread_cond_t *cond, generic_interface_t *mtx);
 
 //  Since we force mutex to get initialized when the memory is allocated,
 //  there is no chance that initialization encounters typeless lock. However,

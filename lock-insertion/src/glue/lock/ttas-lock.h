@@ -6,8 +6,6 @@
 #ifndef __DYLINX_TTAS_LOCK__
 #define __DYLINX_TTAS_LOCK__
 
-#define DYLINX_TTAS_INITIALIZER { malloc(sizeof(ttas_lock_t)), ttas_init, ttas_lock, ttas_unlock, ttas_destroy, ttas_condwait }
-
 typedef struct ttas_lock {
   volatile uint8_t spin_lock __attribute__((aligned(L_CACHE_LINE_SIZE)));
   char __pad[pad_to_cache_line(sizeof(uint8_t))];

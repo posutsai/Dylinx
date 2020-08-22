@@ -5,8 +5,6 @@
 #ifndef __DYLINX_BACKOFF_LOCK__
 #define __DYLINX_BACKOFF_LOCK__
 
-#define DYLINX_BACKOFF_INITIALIZER { malloc(sizeof(backoff_lock_t)), backoff_init, backoff_lock, backoff_unlock, backoff_destroy, backoff_condwait }
-
 // Source code implementation refers to following two places.
 // 1. backoff-lock implementation in LITL
 // https://github.com/multicore-locks/litl/blob/master/src/backoff.c

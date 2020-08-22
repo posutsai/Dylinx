@@ -6,10 +6,11 @@ import itertools
 import logging
 import subprocess
 import pathlib
-from flask import Flask
+from flask import Blueprint, request, jsonify
+import requests
 
 class NaiveSubject:
-    def __init__(self, config_path, verbose=logging.INFO, insertion=True, fix=False):
+    def __init__(self, config_path, verbose=logging.DEBUG, insertion=True, fix=False, include_posix=True):
         self.logger = logging.getLogger("dylinx_logger")
         self.logger.setLevel(verbose)
         with open(config_path, "r") as yaml_file:
@@ -22,6 +23,15 @@ class NaiveSubject:
         self.home_path = os.environ["DYLINX_HOME"]
         self.executable = f"{self.home_path}/build/bin/dylinx"
         self.inject_symbol()
+        with open(f"{self.out_dir}/dylinx-insertion.yaml", "r") as stream:
+            meta = list(yaml.load_all(stream, Loader=yaml.FullLoader))
+        self.permutation = []
+        for m in meta[0]["LockEntity"]:
+            init = ["PTHREADMTX"] if include_posix else []
+            if "lock_combination" in m.keys():
+                self.permutation.append(set([*init, *m["lock_combination"]]))
+
+        self.permutation = list(itertools.product(*self.permutation))
         # Generate content for dylinx-runtime-init.c
         with open(f"{self.out_dir}/dylinx-insertion.yaml", "r") as yaml_file:
             meta = list(yaml.load_all(yaml_file, Loader=yaml.FullLoader))[0]
@@ -38,9 +48,8 @@ class NaiveSubject:
                     code = code + "__dylinx_cu_init_{}_();\n".format(cu)
                 code = code + "}\n"
                 rt_code.write(code)
-        os.chdir(f"{self.home_path}/src/glue/runtime")
         cmd = f"""
-            clang -fPIC -c dylinx-runtime-init.c -o {self.home_path}/build/lib/dylinx-runtime-init.o;
+            clang -fPIC -c {self.home_path}/src/glue/runtime/dylinx-runtime-init.c -o {self.home_path}/build/lib/dylinx-runtime-init.o;
             cd {self.home_path}/build/lib;
             clang -shared -o libdlx-init.so dylinx-runtime-init.o;
             /bin/rm -f dylinx-runtime-init.o
@@ -53,15 +62,10 @@ class NaiveSubject:
             out = proc.stdout.read().decode("utf-8")
             logging.debug(out)
 
-    def step(self, include_posix=True):
+    def get_num_perm(self):
+        return len(self.permutation)
 
-        with open(f"{self.out_dir}/dylinx-insertion.yaml", "r") as stream:
-            meta = list(yaml.load_all(stream, Loader=yaml.FullLoader))
-        permutation = []
-        for m in meta[0]["LockEntity"]:
-            init = ["PTHREADMTX"] if include_posix else []
-            if "lock_combination" in m.keys():
-                permutation.append(set([*init, *m["lock_combination"]]))
+    def step(self, n_comb):
 
         header_start = (
             "#ifndef __DYLINX_ITERATE_LOCK_COMB__\n"
@@ -70,41 +74,36 @@ class NaiveSubject:
         )
         header_end = "\n#endif // __DYLINX_ITERATE_LOCK_COMB__"
 
-        for comb in itertools.product(*permutation):
-            current_iter = []
-            for i, c in enumerate(comb):
-                current_iter.append(f"#define DYLINX_LOCK_TYPE_{i} dylinx_{c.lower()}lock_t")
-                current_iter.append(f"#define DYLINX_LOCK_INIT_{i} DYLINX_{c}_INITIALIZER")
-            with open(f"{self.home_path}/src/glue/runtime/dylinx-runtime-config.h", "w") as rt_config:
-                content = '\n'.join(current_iter)
-                rt_config.write(f"{header_start}\n{content}\n{header_end}")
-            os.chdir(str(pathlib.PurePath(self.cc_path).parent))
-            os.environ["C_INCLUDE_PATH"] = self.home_path
-            os.environ["LD_LIBRARY_PATH"] = f"{self.home_path}/build/lib"
-            with subprocess.Popen(args=self.build_inst.split(' '), stdout=subprocess.PIPE) as proc:
-                logging.debug(proc.stdout.read().decode("utf-8"))
-            self.execute()
-            yield comb
+        comb = self.permutation[n_comb]
+        current_iter = []
+        for i, c in enumerate(comb):
+            current_iter.append(f"#define DYLINX_LOCK_TYPE_{i} dylinx_{c.lower()}lock_t")
+            current_iter.append(f"#define DYLINX_LOCK_INIT_{i} DYLINX_{c}_INITIALIZER")
+        with open(f"{self.home_path}/src/glue/runtime/dylinx-runtime-config.h", "w") as rt_config:
+            content = '\n'.join(current_iter)
+            rt_config.write(f"{header_start}\n{content}\n{header_end}")
+        os.chdir(str(pathlib.PurePath(self.cc_path).parent))
+        os.environ["C_INCLUDE_PATH"] = self.home_path
+        os.environ["LD_LIBRARY_PATH"] = f"{self.home_path}/build/lib"
+        with subprocess.Popen(self.build_inst, stdout=subprocess.PIPE, shell=True) as proc:
+            logging.debug(proc.stdout.read().decode("utf-8"))
+        self.execute()
+        return comb
 
     def execute(self):
-        with subprocess.Popen(args=self.execu_inst.split(' '), stdout=subprocess.PIPE) as proc:
+        with subprocess.Popen(self.execu_inst, stdout=subprocess.PIPE, shell=True) as proc:
             logging.debug(proc.stdout.read().decode("utf-8"))
 
+dylinx_serv = Blueprint("serv", "Dylinx")
 
-app = Flask(__name__)
-class InteractiveSubject(NaiveSubject):
+@dylinx_serv.route('/init', methods=["POST"])
+def init():
+    global subject
+    subject = NaiveSubject(request.json["config_path"])
+    return jsonify({"status": "initialized"})
 
-    def __init__(self, config_path):
-        super().__init__(config_path)
-        self.port = conf["port"]
-        self.host = conf["host"]
+@dylinx_serv.route('/perm', methods=["GET"])
+def perm():
+    global subject
+    return jsonify({"n_perm": subject.get_num_perm()})
 
-    def run_server(config_path):
-        app.run(host='0.0.0.0', port=5566)
-
-def run_client(config_path):
-    pass
-
-@app.route("/initialization", methods=["GET"])
-def server_init():
-    pass

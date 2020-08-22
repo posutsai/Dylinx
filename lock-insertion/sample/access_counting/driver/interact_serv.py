@@ -3,13 +3,17 @@ import sys
 import argparse
 from argparse import RawTextHelpFormatter
 import os
-from Dylinx import NaiveSubject
+from flask import Flask
+from Dylinx import NaiveSubject, dylinx_serv
 
 def main(args):
-    subject = NaiveSubject(args.config_path)
-    for ret_code in subject.step():
-        print(ret_code)
-        sys.exit()
+    # subject = NaiveSubject(args.config_path)
+    # for i in range(subject.get_num_perm()):
+    #     print(comb)
+    #
+    app = Flask(__name__)
+    app.register_blueprint(dylinx_serv)
+    app.run(host="0.0.0.0", port=5566)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=RawTextHelpFormatter)

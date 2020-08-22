@@ -54,7 +54,7 @@ int dylinx_error_disable(generic_interface_t *lock) {
   return -1;
 }
 
-int dylinx_forward_disble(generic_interface_t *lock) {
+int dylinx_forward_disable(generic_interface_t *lock) {
   generic_interface_t *mtx = (generic_interface_t *)lock;
   return mtx->unlocker(mtx->entity);
 }
