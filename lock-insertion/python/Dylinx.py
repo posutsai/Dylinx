@@ -6,7 +6,7 @@ import itertools
 import logging
 import subprocess
 import pathlib
-from flask import Blueprint, request, jsonify
+from flask import request, jsonify, Blueprint
 import requests
 
 class NaiveSubject:
@@ -94,16 +94,32 @@ class NaiveSubject:
         with subprocess.Popen(self.execu_inst, stdout=subprocess.PIPE, shell=True) as proc:
             logging.debug(proc.stdout.read().decode("utf-8"))
 
-dylinx_serv = Blueprint("serv", "Dylinx")
+def blueprint_gen():
 
-@dylinx_serv.route('/init', methods=["POST"])
-def init():
-    global subject
-    subject = NaiveSubject(request.json["config_path"])
-    return jsonify({"status": "initialized"})
+    DylinxBlueprint = Blueprint("Dylinx", "Dylinx")
 
-@dylinx_serv.route('/perm', methods=["GET"])
-def perm():
-    global subject
-    return jsonify({"n_perm": subject.get_num_perm()})
+    @DylinxBlueprint.route("/init", methods=["POST"])
+    def init():
+        global instance
+        Cls = getattr(sys.modules[request.json["mod"]], request.json["cls"])
+        instance = Cls(request.json["config_path"])
+        return jsonify({"error_code": 0})
+
+    @DylinxBlueprint.route("/perm", methods=["GET"])
+    def get_permutations():
+        global instance
+        return jsonify({
+            "error_code": 0,
+            "permutation": instance.permutation
+        })
+
+    @DylinxBlueprint.route("/step/<it>", methods=["GET"])
+    def step(it):
+        global instance
+        instance.step(int(it))
+        return jsonify({
+            "error_code": 0,
+        })
+    i
+    return DylinxBlueprint
 
