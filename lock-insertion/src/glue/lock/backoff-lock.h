@@ -17,6 +17,7 @@
 typedef struct backoff_lock {
   volatile uint8_t spin_lock __attribute__((aligned(L_CACHE_LINE_SIZE)));
   char __pad[pad_to_cache_line(sizeof(uint8_t))];
+  pthread_mutex_t posix_lock;
 } backoff_lock_t __attribute__((aligned(L_CACHE_LINE_SIZE)));
 
 #define BACKOFF_LOCK_INITIALIZER {                                            \
@@ -34,16 +35,16 @@ int backoff_init(void **entity, pthread_mutexattr_t *attr) {
   (*entity) = (backoff_lock_t *)alloc_cache_align(sizeof(backoff_lock_t));
   backoff_lock_t *mtx = *entity;
   mtx->spin_lock = UNLOCKED;
-#ifdef COND_VAR
-  pthread_mutex_init(&mtx->posix_lock);
-#endif
+  pthread_mutex_init(&mtx->posix_lock, NULL);
   return 0;
 }
 
 int backoff_lock(void **entity) {
   uint32_t delay = DEFAULT_BACKOFF_DELAY;
   backoff_lock_t *mtx = *entity;
+  printf("here\n");
   while (1) {
+    printf("in loop\n");
     while (mtx->spin_lock != UNLOCKED) {
       for (uint32_t i = 0; i < delay; i++)
         CPU_PAUSE();

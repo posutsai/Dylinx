@@ -23,18 +23,19 @@ int ttas_init(void **entity, pthread_mutexattr_t *attr) {
 #ifdef __DYLINX_DEBUG__
   printf("ttas-lock is initialized !!!\n");
 #endif
-  *entity = (ttas_lock_t *)alloc_cache_align(sizeof(ttas_lock_t));
+  // *entity = (ttas_lock_t *)alloc_cache_align(sizeof(ttas_lock_t));
+  *entity = (ttas_lock_t *)malloc(sizeof(ttas_lock_t));
   ttas_lock_t *mtx = *entity;
   mtx->spin_lock = UNLOCKED;
+  printf("spin_lock is %d, addr is %p\n", mtx->spin_lock, *entity);
   pthread_mutex_init(&mtx->posix_lock, attr);
   return 0;
 }
 
 int ttas_lock(void **entity) {
-#ifdef __DYLINX_DEBUG__
-  printf("ttas-lock is enabled !!!\n");
-#endif
   ttas_lock_t *mtx = *entity;
+  printf("addr is  %p\n", *entity);
+  return 1;
   while (1) {
     while (mtx->spin_lock != UNLOCKED)
       CPU_PAUSE();
@@ -43,6 +44,9 @@ int ttas_lock(void **entity) {
   }
   int ret = pthread_mutex_lock(&mtx->posix_lock);
   assert(ret == 0);
+#ifdef __DYLINX_DEBUG__
+  printf("ttas-lock is enabled !!!\n");
+#endif
   return 0;
 }
 

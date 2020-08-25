@@ -4,15 +4,11 @@ import argparse
 from argparse import RawTextHelpFormatter
 import os
 from flask import Flask
-from Dylinx import NaiveSubject, dylinx_serv
+from Dylinx import blueprint_gen
 
 def main(args):
-    # subject = NaiveSubject(args.config_path)
-    # for i in range(subject.get_num_perm()):
-    #     print(comb)
-    #
     app = Flask(__name__)
-    app.register_blueprint(dylinx_serv)
+    app.register_blueprint(blueprint_gen())
     app.run(host="0.0.0.0", port=5566)
 
 if __name__ == "__main__":
