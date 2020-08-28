@@ -516,6 +516,25 @@ private:
   uint32_t lock_cnt;
 };
 
+class CastMatchHandler: public MatchFinder::MatchCallback {
+public:
+  CastMatchHandler() {}
+  virtual void run(const MatchFinder::MatchResult &result) {
+    if (const CStyleCastExpr *cast_expr = result.Nodes.getNodeAs<CStyleCastExpr>("casting")) {
+      SourceManager& sm = result.Context->getSourceManager();
+      Dylinx::Instance().rw_ptr->ReplaceText(
+        SourceRange(
+          cast_expr->getLParenLoc().getLocWithOffset(1),
+          cast_expr->getRParenLoc().getLocWithOffset(-1)
+        ),
+        "general_interface_t *"
+      );
+      FileID src_id = sm.getFileID(cast_expr->getLParenLoc());
+      Dylinx::Instance().altered_files.emplace(src_id);
+    }
+  }
+};
+
 class SlotIdentificationConsumer : public clang::ASTConsumer {
 public:
   Rewriter rw;
@@ -761,6 +780,11 @@ public:
       &handler_for_entry
     );
 
+    matcher.addMatcher(
+      cStyleCastExpr(hasDestinationType(asString("pthread_mutex_t *")))
+      .bind("casting"),
+      &handler_for_casting
+    );
     // There's no casting need in memcached
     // matcher.addMatcher(
     //   callExpr(
@@ -793,6 +817,7 @@ private:
   RecordAliasMatchHandler handler_for_record_alias;
   MemberInitMatchHandler handler_for_member_init;
   EntryMatchHandler handler_for_entry;
+  CastMatchHandler handler_for_casting;
 };
 
 class SlotIdentificationAction : public clang::ASTFrontendAction {
