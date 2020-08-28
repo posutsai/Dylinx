@@ -526,11 +526,21 @@ public:
     Dylinx::Instance().altered_files.clear();
     Dylinx::Instance().rw_ptr = new Rewriter;
     Dylinx::Instance().rw_ptr->setSourceMgr(sm, opts);
+
     // Match all
-    //    pthread_mutex_t mutex;
-    //    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-    // and convert to
+    //
+    //    a. pthread_mutex_t mutex;
+    //    b. pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    //
+    // and handle all the matched pattern into two ways. If the
+    // instance locates in local scope(able to conduct expression
+    // ), initialize the lock immediately as following.
+    //
     //    DYLINX_LOCK_TYPE_1 lock = DYLINX_LOCK_INIT_1;
+    //
+    // On the other hand, if the lock is declared in the global
+    // scope, whole global locks no matter static or not will be
+    // initialized when entering main function.
     matcher.addMatcher(
       varDecl(
         hasType(asString("pthread_mutex_t")),
@@ -539,21 +549,22 @@ public:
         ))).bind("vars"),
       &handler_for_vars
     );
+
     // Match all
     //    pthread_mutex_t locks[NUM_LOCK];
     // and convert them to
-    //    pthread_mutex_t locks[NUM_LOCK]; __dylinx_array_init_(locks, NUM_LOCK, DYLINX_LOCK_MACRO);
-    // matcher.addMatcher(
-    //   varDecl(hasType(arrayType(hasElementType(qualType(asString("pthread_mutex_t")))))).bind("array_decls"),
-    //   &handler_for_array
-    // );
+    //    DYLINX_LOCK_TYPE_1 locks[NUM_LOCK]; __dylinx_array_init_(locks, NUM_LOCK);
+    matcher.addMatcher(
+      varDecl(hasType(arrayType(hasElementType(qualType(asString("pthread_mutex_t")))))).bind("array_decls"),
+      &handler_for_array
+    );
 
     // Match all
     //    typedef pthread_mutex_t MyLock
     //    typedef pthread_mutext_t *MyLockPtr
     // and convert them to
-    //    typedef BaseLock MyLock
-    //    typedef BaseLock *MyLock
+    //    typedef general_interface_t MyLock
+    //    typedef general_interface_t *MyLock
     matcher.addMatcher(
       typedefDecl(eachOf(
         hasType(asString("pthread_mutex_t")),
@@ -592,6 +603,20 @@ public:
       &handler_for_malloc
     );
 
+    // Match all struct with pthred_mutex_t or pthread_mutex_t *
+    // member
+    //
+    //    struct MyStruct {
+    //      ....
+    //      pthread_mutex_t my_mtx;
+    //    };
+    //
+    // and convert the struct into following form.
+    //
+    //    struct MyStruct {
+    //       ....
+    //      DYLINX_LOCK_TYPE_1 my_mtx;
+    //    };
     matcher.addMatcher(
       fieldDecl(eachOf(
         hasType(asString("pthread_mutex_t")),
@@ -600,6 +625,18 @@ public:
       &handler_for_struct
     );
 
+    // Although pthread_mutex_t member and regular lock instance
+    // seems similar, instead of forcing these instance to initialize
+    // right after declaration, we make them initialized with specific
+    // function just like pthread_mutex_init().
+    //
+    //    struct MyStruct { pthread_mutex_t mtx; } instance;
+    //    void foo() { pthread_mutex_init(&instance.mtx, NULL); }
+    //
+    // Convert the above pattern as following.
+    //
+    //    struct MyStruct { DYLINX_LOCK_TYPE_1 mtx; } instance;
+    //    void foo() { __dylinx_member_init_(&instance.mtx, NULL); }
     matcher.addMatcher(
       varDecl(
         anyOf(
@@ -617,6 +654,15 @@ public:
       &handler_for_initlist
     );
 
+    // Match all typedef declaration and treat them as whole group of
+    // same type of locks.
+    //
+    //    typedef pthread_mutex_t MyLock;
+    //
+    // and convert the matched code into following form.
+    //
+    //    typedef DYLINX_LOCK_TYPE_1 MyLock;
+    //
     matcher.addMatcher(
       typedefDecl(hasType(qualType(hasDeclaration(
         recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))
@@ -624,6 +670,54 @@ public:
       &handler_for_record_alias
     );
 
+    // Match all funtion call including
+    // a. pthread_mutex_lock
+    // b. pthread_mutex_unlock
+    // c. pthread_mutex_init
+    // d. pthread_mutex_destroy
+    // and replace them with Dylinx own version. Take
+    // a regular mutex instance lifecycle for instance.
+    //
+    //    void foo() {
+    //      pthred_mutex_t mtx;
+    //      pthread_mutex_init(&mtx, NULL);
+    //      pthread_mtuex_lock(&mtx);
+    //      pthread_mutex_unlock(&mtx);
+    //      pthread_mutex_destroy(&mtx);
+    //    }
+    //
+    // The above code would be converted into following
+    // pattern.
+    //
+    //    void foo() {
+    //      DYLINX_LOCK_TYPE_1 mtx = DYLINX_LOCK_INIT_1;
+    //      __dylinx_check_var_(&mtx, NULL);
+    //      __dylinx_generic_enable(&mtx);
+    //      __dylinx_generic_disable(&mtx);
+    //      __dylinx_generic_destroy(&mtx);
+    //    }
+    //
+    // Things get slight different when dealing with struct
+    // with mutex memeber lifecycle.
+    //
+    //    struct MyStruct { pthread_mutex_t mtx; int x; };
+    //    void foo() {
+    //      struct instance = { PTHREAD_MUTEX_INITIALIZER, 0 }
+    //      pthread_mutex_lock(&instance.mtx);
+    //      pthread_mutex_unlock(&instance.mtx);
+    //      pthread_mutex_destroy(&instance.mtx);
+    //    }
+    //
+    // The modified version looks like following.
+    //
+    //   struct MyStruct { pthread_mutex_t mtx; int x; };
+    //   void foo() {
+    //     struct instance = { DYLINX_LOCK_INIT_1, 0 };
+    //     __dylinx_member_init_(&instance.mtx);
+    //     __dylinx_generic_enable(&instance.mtx);
+    //     __dylinx_generic_disable(&instance.mtx);
+    //     __dylinx_generic_destroy(&instance.mtx);
+    //   }
     matcher.addMatcher(
       callExpr(eachOf(
         callee(functionDecl(hasName("pthread_mutex_lock"))),
@@ -667,12 +761,13 @@ public:
       &handler_for_entry
     );
 
-    matcher.addMatcher(
-      callExpr(
-        hasAnyArgument(hasType(asString("pthread_mutex_t *")))
-      ).bind("ptr_ref"),
-      &handler_for_ref
-    );
+    // There's no casting need in memcached
+    // matcher.addMatcher(
+    //   callExpr(
+    //     hasAnyArgument(hasType(asString("pthread_mutex_t *")))
+    //   ).bind("ptr_ref"),
+    //   &handler_for_ref
+    // );
 
     matcher.matchAST(Context);
     std::set<FileID>::iterator file;
