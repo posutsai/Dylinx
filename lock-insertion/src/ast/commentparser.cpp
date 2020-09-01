@@ -28,6 +28,7 @@
 #include <string>
 #include <cstring>
 #include <regex>
+#include <cctype>
 #include <utility>
 #include "yaml-cpp/yaml.h"
 #include "util.h"
@@ -284,7 +285,7 @@ public:
       SourceManager& sm = result.Context->getSourceManager();
       std::string recr_name = td->getUnderlyingType().getAsString();
       std::string alias = td->getNameAsString();
-      Dylinx::Instance().lock_member_ids[alias] = Dylinx::Instance().lock_member_ids[recr_name];
+      // Dylinx::Instance().lock_member_ids[alias] = Dylinx::Instance().lock_member_ids[recr_name];
     }
   }
 };
@@ -338,32 +339,26 @@ class InitlistMatchHandler: public MatchFinder::MatchCallback {
 public:
   InitlistMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
-    if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("struct_instance")) {
-      SourceManager& sm = result.Context->getSourceManager();
-      std::string cur_loc = vd->getBeginLoc().printToString(sm);
-      if (cur_loc.compare(processed_loc) != 0) {
-        processed_loc = cur_loc;
-        std::string recr_name = vd->getType().getAsString();
-        cursor = 0;
-        ids = Dylinx::Instance().lock_member_ids[recr_name];
-      }
-    }
     if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("struct_member_init")) {
-      SourceManager& sm = result.Context->getSourceManager();
+
+      if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("struct_instance")) {
+        counter = 0;
+        recr_name = vd->getType().getTypePtr()->getUnqualifiedDesugaredType()->getCanonicalTypeInternal().getAsString();
+        recr_name = std::regex_replace(recr_name, std::regex("^(struct *)"), "");
+      }
       SourceLocation begin_loc = init_expr->getLBraceLoc();
+      SourceManager& sm = result.Context->getSourceManager();
       char format[100];
-      sprintf(format, "DYLINX_STRUCT_MEMBER_INIT_%d", ids[cursor]);
+      sprintf(format, "DYLINX_%s_MEMBER_INIT_%d", recr_name.c_str(), counter);
       Dylinx::Instance().rw_ptr->ReplaceText(
         sm.getImmediateExpansionRange(begin_loc).getAsRange(),
         format
       );
-      cursor++;
     }
   }
 private:
-  uint32_t cursor;
-  std::vector<uint32_t> ids;
-  std::string processed_loc;
+  uint32_t counter;
+  std::string recr_name;
 };
 
 class EntryMatchHandler: public MatchFinder::MatchCallback {
@@ -649,27 +644,34 @@ public:
     // right after declaration, we make them initialized with specific
     // function just like pthread_mutex_init().
     //
-    //    struct MyStruct { pthread_mutex_t mtx; } instance;
-    //    void foo() { pthread_mutex_init(&instance.mtx, NULL); }
+    //    struct MyStruct { pthread_mutex_t mtx; int a; };
+    //    typedef struct MyStruct alias_t;
+    //    struct MyStruct ins1 = {PTHREAD_MUTEX_INITIALIZER, 0};
+    //    alias_t ins2 = {PTHREAD_MUTEX_INITIALIZER, 0};
     //
     // Convert the above pattern as following.
     //
-    //    struct MyStruct { DYLINX_LOCK_TYPE_1 mtx; } instance;
-    //    void foo() { __dylinx_member_init_(&instance.mtx, NULL); }
+    //    struct MyStruct { DYLINX_LOCK_TYPE_1 mtx; int a; };
+    //    typedef struct MyStruct alias_t;
+    //    struct MyStruct instance = {DYLINX_MyStruct_MEMBER_INIT_1, 0}
+    //    alias_t ins2 = {DYLINX_MyStruct_MEMBER_INIT_1, 0};
+    //
+    // Note:
+    // Current implementation is able to deal recursive "typedef". Since
+    // user may define nested structure with pthread_mutex_t member and
+    // the macro is named after the most exterior struct name, it is
+    // possible that the macro is undefined.
     matcher.addMatcher(
       varDecl(
-        anyOf(
-          hasType(recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))),
-          hasType(typedefDecl(hasType(qualType(hasDeclaration(
-            recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))
-          )))))
-        ),
+        hasType(hasUnqualifiedDesugaredType(recordType(
+          hasDeclaration(recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))
+        )))),
         forEachDescendant(
           initListExpr(hasSyntacticForm(
             hasType(asString("pthread_mutex_t"))
           )).bind("struct_member_init")
-        ))
-      .bind("struct_instance"),
+        )
+      ) .bind("struct_instance"),
       &handler_for_initlist
     );
 
