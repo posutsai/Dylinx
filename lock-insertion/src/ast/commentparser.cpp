@@ -38,6 +38,15 @@
 #define STRUCT_MEM_ALLOCA_TYPE "STRUCT_MEMBER"
 #define TYPEDEF_ALLOCA_TYPE "TYPEDEF"
 #define MEM_ALLOCA_TYPE "MALLOC"
+#define DEBUG_LOG(pattern, ins, sm)  \
+  do {                      \
+    SourceLocation matched_loc = ins->getBeginLoc();  \
+    FileID src_id = sm.getFileID(matched_loc); \
+    printf( \
+      "[ LOG FIND ] %20s L%5d, %s\n", \
+      #pattern, sm.getSpellingLineNumber(matched_loc), sm.getFileEntryForID(src_id)->getName().str().c_str() \
+    ); \
+  } while(0)
 
 using namespace clang;
 using namespace llvm;
@@ -117,11 +126,31 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("interfaces")) {
       SourceManager& sm = result.Context->getSourceManager();
-      FileID src_id = sm.getFileID(e->getBeginLoc());
-      Dylinx::Instance().rw_ptr->ReplaceText(
-        e->getCallee()->getSourceRange(),
-        interface_LUT[e->getDirectCallee()->getNameInfo().getName().getAsString()]
-      );
+      SourceLocation begin_loc = e->getBeginLoc();
+      SourceLocation end_loc = e->getEndLoc();
+      if (begin_loc.isMacroID()) {
+        SourceLocation macro_loc = sm.getImmediateMacroCallerLoc(begin_loc);
+        printf(
+          "CallExpr L%5d, col %5d macro is %s, callee is %s\n",
+          sm.getExpansionLineNumber(begin_loc),
+          sm.getExpansionColumnNumber(begin_loc),
+          Lexer::getImmediateMacroName(begin_loc, sm, result.Context->getLangOpts()).str().c_str(),
+          e->getDirectCallee()->getNameInfo().getName().getAsString().c_str()
+        );
+        std::string macro_name = Lexer::getImmediateMacroName(begin_loc, sm, result.Context->getLangOpts()).str();
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          sm.getImmediateMacroCallerLoc(begin_loc), macro_name.length(),
+          interface_LUT[e->getDirectCallee()->getNameInfo().getName().getAsString()]
+        );
+        begin_loc = macro_loc;
+      }
+      else {
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          e->getCallee()->getSourceRange(),
+          interface_LUT[e->getDirectCallee()->getNameInfo().getName().getAsString()]
+        );
+      }
+      FileID src_id = sm.getFileID(begin_loc);
       Dylinx::Instance().altered_files.emplace(src_id);
     }
   }
@@ -131,6 +160,7 @@ private:
     {"pthread_mutex_lock", "__dylinx_generic_enable_"},
     {"pthread_mutex_unlock", "__dylinx_generic_disable_"},
     {"pthread_mutex_destroy", "__dylinx_generic_destroy_"},
+    {"pthread_mutex_trylock", "__dylinx_generic_attempt_"},
     {"pthread_cond_wait", "__dylinx_generic_condwait_"}
   };
 };
@@ -141,6 +171,9 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("member_init_call")) {
       SourceManager& sm = result.Context->getSourceManager();
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(MemberInit, e, sm);
+#endif
       FileID src_id = sm.getFileID(e->getBeginLoc());
       Dylinx::Instance().rw_ptr->ReplaceText(
         e->getCallee()->getSourceRange(),
@@ -157,6 +190,9 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     const CallExpr *e;
     SourceManager& sm = result.Context->getSourceManager();
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(PtrDecl, e, sm);
+#endif
     std::string ptr_name;
     if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("malloc_decl")) {
       ptr_name = vd->getNameAsString();
@@ -196,6 +232,9 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("array_decls")) {
       SourceManager& sm = result.Context->getSourceManager();
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(ArrayDecl, d, sm);
+#endif
       SourceLocation loc = d->getBeginLoc();
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
@@ -252,6 +291,9 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const TypedefDecl *d = result.Nodes.getNodeAs<TypedefDecl>("typedefs")) {
       SourceManager& sm = result.Context->getSourceManager();
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(TypedeDecl, d, sm);
+#endif
       const Token *token = move2n_token(d->getBeginLoc(), 1, sm, result.Context->getLangOpts());
       char format[100];
       sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
@@ -283,6 +325,9 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const TypedefDecl *td = result.Nodes.getNodeAs<TypedefDecl>("record_alias")) {
       SourceManager& sm = result.Context->getSourceManager();
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(RecordAlias, td, sm);
+#endif
       std::string recr_name = td->getUnderlyingType().getAsString();
       std::string alias = td->getNameAsString();
       // Dylinx::Instance().lock_member_ids[alias] = Dylinx::Instance().lock_member_ids[recr_name];
@@ -296,6 +341,9 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const FieldDecl *fd = result.Nodes.getNodeAs<FieldDecl>("struct_members")) {
       SourceManager& sm = result.Context->getSourceManager();
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(StructField, fd, sm);
+#endif
       SourceLocation loc = fd->getBeginLoc();
       FileID src_id = sm.getFileID(loc);
       std::string recr_name = fd->getParent()->getNameAsString();
@@ -341,13 +389,16 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("struct_member_init")) {
 
+      SourceManager& sm = result.Context->getSourceManager();
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(Initlist, init_expr, sm);
+#endif
       if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("struct_instance")) {
         counter = 0;
         recr_name = vd->getType().getTypePtr()->getUnqualifiedDesugaredType()->getCanonicalTypeInternal().getAsString();
         recr_name = std::regex_replace(recr_name, std::regex("^(struct *)"), "");
       }
       SourceLocation begin_loc = init_expr->getLBraceLoc();
-      SourceManager& sm = result.Context->getSourceManager();
       char format[100];
       sprintf(format, "DYLINX_%s_MEMBER_INIT_%d", recr_name.c_str(), counter);
       Dylinx::Instance().rw_ptr->ReplaceText(
@@ -367,6 +418,9 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const FunctionDecl *fd = result.Nodes.getNodeAs<FunctionDecl>("entry")) {
       SourceManager& sm = result.Context->getSourceManager();
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(EntryMatch, fd, sm);
+#endif
       CompoundStmt *main_body = dyn_cast<CompoundStmt>(fd->getBody());
       SourceLocation scope_start = main_body->getLBracLoc();
       Dylinx::Instance().rw_ptr->InsertText(
@@ -386,6 +440,9 @@ public:
     if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("ptr_ref")) {
       //! config from config.yml
       SourceManager& sm = result.Context->getSourceManager();
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(PtrRef, e, sm);
+#endif
       std::string func_name = e->getDirectCallee()->getNameInfo().getName().getAsString();
       std::vector<std::string>::iterator iter = std::find(
           interfaces.begin(), interfaces.end(), func_name
@@ -431,6 +488,9 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("vars")) {
       SourceManager& sm = result.Context->getSourceManager();
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(VarDecl, d, sm);
+#endif
       // Dealing with Type information
       SourceLocation begin_loc = d->getBeginLoc();
       SourceLocation init_loc = Lexer::findNextToken(
@@ -473,6 +533,7 @@ public:
         uint32_t skip = d->getStorageClass() == StorageClass::SC_Static? 2: 1;
         const Token *var_name = move2n_token(d->getBeginLoc(), skip, sm, result.Context->getLangOpts());
         if (d->hasInit()) {
+
           Dylinx::Instance().rw_ptr->RemoveText(
             SourceRange(
               var_name->getLocation().getLocWithOffset(d->getNameAsString().length()),
@@ -488,6 +549,7 @@ public:
         decl_loc["name"] = d->getNameAsString();
         Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
         return;
+
       } else if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
         SourceManager& sm = result.Context->getSourceManager();
         SourceLocation begin_loc = init_expr->getLBraceLoc();
@@ -517,6 +579,9 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const CStyleCastExpr *cast_expr = result.Nodes.getNodeAs<CStyleCastExpr>("casting")) {
       SourceManager& sm = result.Context->getSourceManager();
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(CastPtr, cast_expr, sm);
+#endif
       Dylinx::Instance().rw_ptr->ReplaceText(
         SourceRange(
           cast_expr->getLParenLoc().getLocWithOffset(1),
@@ -755,6 +820,7 @@ public:
           )))
         ),
         callee(functionDecl(hasName("pthread_mutex_destroy"))),
+        callee(functionDecl(hasName("pthread_mutex_trylock"))),
         callee(functionDecl(hasName("pthread_cond_wait")))
       )).bind("interfaces"),
       &handler_for_interface
@@ -782,11 +848,11 @@ public:
       &handler_for_entry
     );
 
-    matcher.addMatcher(
-      cStyleCastExpr(hasDestinationType(asString("pthread_mutex_t *")))
-      .bind("casting"),
-      &handler_for_casting
-    );
+    // matcher.addMatcher(
+    //   cStyleCastExpr(hasDestinationType(asString("pthread_mutex_t *")))
+    //   .bind("casting"),
+    //   &handler_for_casting
+    // );
     // There's no casting need in memcached
     // matcher.addMatcher(
     //   callExpr(
@@ -844,6 +910,9 @@ public:
     // Manually add the definition of BaseLock, slot_lock and
     // slot_unlock here.
     SourceManager &sm = Dylinx::Instance().rw_ptr->getSourceMgr();
+#ifdef __DYLINX_DEBUG__
+    printf("[End Parsing]\n");
+#endif
     if (!sm.getFileEntryForID(sm.getMainFileID())->getName().str().compare(Dylinx::Instance().extra_init4cu.first)) {
       SourceLocation end = sm.getLocForEndOfFile(sm.getMainFileID());
       char prototype[100];
