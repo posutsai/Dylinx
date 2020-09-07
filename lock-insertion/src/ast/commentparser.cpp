@@ -579,17 +579,31 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const CStyleCastExpr *cast_expr = result.Nodes.getNodeAs<CStyleCastExpr>("casting")) {
       SourceManager& sm = result.Context->getSourceManager();
-#ifdef __DYLINX_DEBUG__
-      DEBUG_LOG(CastPtr, cast_expr, sm);
-#endif
-      Dylinx::Instance().rw_ptr->ReplaceText(
-        SourceRange(
-          cast_expr->getLParenLoc().getLocWithOffset(1),
-          cast_expr->getRParenLoc().getLocWithOffset(-1)
-        ),
-        "general_interface_t *"
-      );
-      FileID src_id = sm.getFileID(cast_expr->getLParenLoc());
+// #ifdef __DYLINX_DEBUG__
+//       DEBUG_LOG(CastPtr, cast_expr, sm);
+// #endif
+      SourceLocation begin_loc = cast_expr->getLParenLoc();
+      SourceLocation end_loc = cast_expr->getRParenLoc();
+      if (begin_loc.isMacroID()) {
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          SourceRange(
+            sm.getSpellingLoc(begin_loc).getLocWithOffset(1),
+            sm.getSpellingLoc(end_loc).getLocWithOffset(-1)
+          ),
+          "general_interface_t *"
+        );
+      }
+      else {
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          SourceRange(
+            cast_expr->getLParenLoc().getLocWithOffset(1),
+            cast_expr->getRParenLoc().getLocWithOffset(-1)
+          ),
+          "general_interface_t *"
+        );
+      }
+      return;
+      FileID src_id = sm.getFileID(begin_loc);
       Dylinx::Instance().altered_files.emplace(src_id);
     }
   }
@@ -848,11 +862,11 @@ public:
       &handler_for_entry
     );
 
-    // matcher.addMatcher(
-    //   cStyleCastExpr(hasDestinationType(asString("pthread_mutex_t *")))
-    //   .bind("casting"),
-    //   &handler_for_casting
-    // );
+    matcher.addMatcher(
+      cStyleCastExpr(hasDestinationType(asString("pthread_mutex_t *")))
+      .bind("casting"),
+      &handler_for_casting
+    );
     // There's no casting need in memcached
     // matcher.addMatcher(
     //   callExpr(
@@ -911,7 +925,7 @@ public:
     // slot_unlock here.
     SourceManager &sm = Dylinx::Instance().rw_ptr->getSourceMgr();
 #ifdef __DYLINX_DEBUG__
-    printf("[End Parsing]\n");
+    printf("[ End UNIT ]\n");
 #endif
     if (!sm.getFileEntryForID(sm.getMainFileID())->getName().str().compare(Dylinx::Instance().extra_init4cu.first)) {
       SourceLocation end = sm.getLocForEndOfFile(sm.getMainFileID());
