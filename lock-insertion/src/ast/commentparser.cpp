@@ -592,6 +592,7 @@ public:
           ),
           "general_interface_t *"
         );
+        begin_loc = sm.getSpellingLoc(begin_loc);
       }
       else {
         Dylinx::Instance().rw_ptr->ReplaceText(
@@ -602,7 +603,6 @@ public:
           "general_interface_t *"
         );
       }
-      return;
       FileID src_id = sm.getFileID(begin_loc);
       Dylinx::Instance().altered_files.emplace(src_id);
     }
