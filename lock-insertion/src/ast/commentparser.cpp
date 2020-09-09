@@ -344,8 +344,7 @@ public:
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(StructField, fd, sm);
 #endif
-      SourceLocation loc = fd->getBeginLoc();
-      FileID src_id = sm.getFileID(loc);
+      FileID src_id = sm.getFileID(fd->getBeginLoc());
       std::string recr_name = fd->getParent()->getNameAsString();
       recr_name = "struct " + recr_name;
       std::string field_name = fd->getNameAsString();
@@ -355,7 +354,10 @@ public:
         return;
       char format[50];
       sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
-      Dylinx::Instance().rw_ptr->ReplaceText(loc, 15, format);
+      Dylinx::Instance().rw_ptr->ReplaceText(
+        SourceRange(fd->getTypeSpecStartLoc(), fd->getTypeSpecEndLoc()),
+        format
+      );
       Dylinx::Instance().inserted_member.insert(
         std::make_tuple(recr_name, field_name)
       );
@@ -511,12 +513,10 @@ public:
       if (processing_type_loc != key) {
         char format[50];
         sprintf(format, "DYLINX_LOCK_TYPE_%d", Dylinx::Instance().lock_i);
-        if (d->getStorageClass() == StorageClass::SC_Static) {
-          SourceLocation type_loc = move2n_token(begin_loc, 1, sm, result.Context->getLangOpts())->getLocation();
-          Dylinx::Instance().rw_ptr->ReplaceText(type_loc, 15, format);
-        }
-        else
-          Dylinx::Instance().rw_ptr->ReplaceText(begin_loc, 15, format);
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          SourceRange(d->getTypeSpecStartLoc(), d->getTypeSpecEndLoc()),
+          format
+        );
         if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
           decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
         decl_loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
@@ -1020,7 +1020,7 @@ int main(int argc, const char **argv) {
   YAML::Node updated_file = Dylinx::Instance().lock_decl["AlteredFiles"];
   for (YAML::const_iterator it = updated_file.begin(); it != updated_file.end(); it++) {
     fs::path u =  (*it).as<std::string>();
-    fs::copy(u, revert / u.filename());
+    fs::copy_file(u, revert / u.filename(), fs::copy_options::skip_existing);
     fs::remove(u);
     fs::copy(Dylinx::Instance().temp_dir / u.filename(), u);
   }
