@@ -553,12 +553,14 @@ public:
       // Dealing with initialization
       if (!d->isStaticLocal() && d->hasGlobalStorage()) {
         // Global variable requires extra init.
-        const Token *var_name = move2n_token(d->getTypeSpecStartLoc(), 1, sm, result.Context->getLangOpts());
+        const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro");
+        const Token *var_name = move2n_token(d->getTypeSpecStartLoc(), 2, sm, result.Context->getLangOpts());
         if (d->hasInit()) {
+          printf("should print out \n");
           Dylinx::Instance().rw_ptr->RemoveText(
             SourceRange(
-              var_name->getLocation().getLocWithOffset(d->getNameAsString().length()),
-              sm.getImmediateExpansionRange(d->getEndLoc()).getAsRange().getEnd()
+              var_name->getLocation(),
+              sm.getImmediateExpansionRange(init_expr->getBeginLoc()).getEnd()
             )
           );
         }
