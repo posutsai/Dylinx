@@ -63,7 +63,8 @@ public:
     return dylinx;
   }
   Rewriter *rw_ptr;
-  std::set<FileID> altered_files;
+  std::set<FileID> cu_deps;
+  std::set<fs::path> altered_files;
   std::ofstream yaml_fout;
   YAML::Node lock_decl;
   uint32_t lock_i = 0;
@@ -99,6 +100,10 @@ void write_modified_file(fs::path file_path, FileID fid, SourceManager& sm) {
   std::error_code err;
   raw_fd_ostream fstream((Dylinx::Instance().temp_dir / file_path.filename()).string(), err);
   Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
+}
+
+bool save2altered_list(FileID src_id, SourceManager& sm) {
+  return Dylinx::Instance().cu_deps.insert(src_id).second;
 }
 
 YAML::Node parse_comment(std::string raw_text) {
@@ -151,7 +156,7 @@ public:
         );
       }
       FileID src_id = sm.getFileID(begin_loc);
-      Dylinx::Instance().altered_files.emplace(src_id);
+      save2altered_list(src_id, sm);
     }
   }
 private:
@@ -179,7 +184,7 @@ public:
         e->getCallee()->getSourceRange(),
         "__dylinx_member_init_"
       );
-      Dylinx::Instance().altered_files.emplace(src_id);
+      save2altered_list(src_id, sm);
     }
   }
 };
@@ -222,7 +227,6 @@ public:
       e->getEndLoc().getLocWithOffset(2),
       arr_init
     );
-    Dylinx::Instance().altered_files.emplace(sm.getFileID(e->getBeginLoc()));
   }
 };
 
@@ -280,7 +284,7 @@ public:
       }
       Dylinx::Instance().lock_i++;
       Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
-      Dylinx::Instance().altered_files.emplace(src_id);
+      save2altered_list(src_id, sm);
     }
   }
 };
@@ -314,7 +318,7 @@ public:
       lock_meta["modification_type"] = TYPEDEF_ALLOCA_TYPE;
       Dylinx::Instance().lock_i++;
       Dylinx::Instance().lock_decl["LockEntity"].push_back(lock_meta);
-      Dylinx::Instance().altered_files.emplace(src_id);
+      save2altered_list(src_id, sm);
     }
   }
 };
@@ -380,7 +384,7 @@ public:
       }
       Dylinx::Instance().lock_i++;
       Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
-      Dylinx::Instance().altered_files.emplace(src_id);
+      save2altered_list(src_id, sm);
     }
   }
 };
@@ -430,7 +434,7 @@ public:
         "\n\t__dylinx_global_mtx_init_();\n"
       );
       FileID src_id = sm.getFileID(scope_start);
-      Dylinx::Instance().altered_files.emplace(src_id);
+      save2altered_list(src_id, sm);
     }
   }
 };
@@ -472,7 +476,7 @@ public:
           Dylinx::Instance().rw_ptr->InsertTextAfter(end, ")");
         }
       }
-      Dylinx::Instance().altered_files.emplace(sm.getFileID(e->getBeginLoc()));
+      save2altered_list(sm.getFileID(e->getBeginLoc()), sm);
     }
   }
 private:
@@ -505,7 +509,7 @@ public:
       FileID src_id = sm.getFileID(begin_loc);
       uint32_t line = sm.getSpellingLineNumber(begin_loc);
       LocID key = std::make_pair(src_id, line);
-      Dylinx::Instance().altered_files.emplace(src_id);
+      save2altered_list(src_id, sm);
       YAML::Node decl_loc;
       // Take care when user declares their mutex in the same line.
       // Ex:
@@ -530,10 +534,8 @@ public:
 
       // Dealing with initialization
       if (!d->isStaticLocal() && d->hasGlobalStorage()) {
-        uint32_t skip = d->getStorageClass() == StorageClass::SC_Static? 2: 1;
-        const Token *var_name = move2n_token(d->getBeginLoc(), skip, sm, result.Context->getLangOpts());
+        const Token *var_name = move2n_token(d->getTypeSpecStartLoc(), 1, sm, result.Context->getLangOpts());
         if (d->hasInit()) {
-
           Dylinx::Instance().rw_ptr->RemoveText(
             SourceRange(
               var_name->getLocation().getLocWithOffset(d->getNameAsString().length()),
@@ -604,7 +606,7 @@ public:
         );
       }
       FileID src_id = sm.getFileID(begin_loc);
-      Dylinx::Instance().altered_files.emplace(src_id);
+      save2altered_list(src_id, sm);
     }
   }
 };
@@ -616,7 +618,7 @@ public:
   explicit SlotIdentificationConsumer(ASTContext *Context, const LangOptions& opts): opts{opts} {}
   virtual void HandleTranslationUnit(clang::ASTContext &Context) {
     SourceManager& sm = Context.getSourceManager();
-    Dylinx::Instance().altered_files.clear();
+    Dylinx::Instance().cu_deps.clear();
     Dylinx::Instance().rw_ptr = new Rewriter;
     Dylinx::Instance().rw_ptr->setSourceMgr(sm, opts);
 
@@ -876,15 +878,6 @@ public:
     // );
 
     matcher.matchAST(Context);
-    std::set<FileID>::iterator file;
-    for (
-      file = Dylinx::Instance().altered_files.begin();
-      file != Dylinx::Instance().altered_files.end();
-      file++
-    )
-      Dylinx::Instance().lock_decl["AlteredFiles"].push_back(
-        sm.getFileEntryForID(*file)->getName().str()
-      );
   }
 private:
   MatchFinder matcher;
@@ -950,13 +943,14 @@ public:
         end,
         global_initializer
       );
-      Dylinx::Instance().altered_files.emplace(sm.getMainFileID());
+      save2altered_list(sm.getMainFileID(), sm);
     }
     std::set<FileID>::iterator iter;
-    for (iter = Dylinx::Instance().altered_files.begin(); iter != Dylinx::Instance().altered_files.end(); iter++) {
-      std::string filename = sm.getFileEntryForID(*iter)->getName().str();
+    for (iter = Dylinx::Instance().cu_deps.begin(); iter != Dylinx::Instance().cu_deps.end(); iter++) {
       Dylinx::Instance().rw_ptr->InsertText(sm.getLocForStartOfFile(*iter), "#include \"dylinx-glue.h\"\n");
+      std::string filename = sm.getFileEntryForID(*iter)->getName().str();
       write_modified_file(filename, *iter, sm);
+      Dylinx::Instance().altered_files.insert(filename);
     }
     delete Dylinx::Instance().rw_ptr;
     return;
@@ -1017,6 +1011,13 @@ int main(int argc, const char **argv) {
   std::shared_ptr<CompilationDatabase> compiler_db = CompilationDatabase::autoDetectFromSource(compiler_db_path, err);
   ClangTool tool(*compiler_db, compiler_db->getAllFiles());
   tool.run(newSlotIdentificationActionFactory(compiler_db).get());
+
+  std::set<fs::path>::iterator it;
+  for ( it = Dylinx::Instance().altered_files.begin(); it != Dylinx::Instance().altered_files.end(); it++) {
+    printf("appending %s\n", it->c_str());
+    Dylinx::Instance().lock_decl["AlteredFiles"].push_back(it->string());
+  }
+
   YAML::Node updated_file = Dylinx::Instance().lock_decl["AlteredFiles"];
   for (YAML::const_iterator it = updated_file.begin(); it != updated_file.end(); it++) {
     fs::path u =  (*it).as<std::string>();
