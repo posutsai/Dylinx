@@ -54,8 +54,11 @@ using namespace clang::tooling;
 using namespace clang::ast_matchers;
 namespace fs = std::filesystem;
 
-// Consider FileID and line number combination as an unique ID.
-typedef std::pair<FileID, uint32_t> LocID;
+// Use tuple with four elements as unique ID
+// 1. file path
+// 2. line number
+// 3. column number
+typedef std::tuple<fs::path, uint32_t, uint32_t> EntityID;
 class Dylinx {
 public:
   static Dylinx& Instance() {
@@ -63,26 +66,20 @@ public:
     return dylinx;
   }
   Rewriter *rw_ptr;
+  std::set<EntityID> metas;
   std::set<FileID> cu_deps;
   std::set<fs::path> altered_files;
   std::ofstream yaml_fout;
   YAML::Node lock_decl;
   uint32_t lock_i = 0;
-  std::map<
-    std::string,
-    std::vector<uint32_t>
-  > lock_member_ids;
-  std::set<
-    std::tuple<std::string, std::string>
-  > inserted_member;
+  std::map<std::string, std::vector<uint32_t>> lock_member_ids;
+  std::set<std::tuple<std::string, std::string>> inserted_member;
   fs::path temp_dir;
-  std::pair<std::string, uint32_t> extra_init4cu{"", 0};
+  bool require_init;
 private:
   Dylinx() {};
   ~Dylinx() {};
 };
-
-std::string processing_dir = ".processing/";
 
 const Token *move2n_token(SourceLocation loc, uint32_t n, SourceManager& sm, const LangOptions& opts) {
   SourceLocation arrive = loc;
@@ -100,6 +97,18 @@ void write_modified_file(fs::path file_path, FileID fid, SourceManager& sm) {
   std::error_code err;
   raw_fd_ostream fstream((Dylinx::Instance().temp_dir / file_path.filename()).string(), err);
   Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
+}
+
+// Chances are saving is failed since the uid may already exist.
+bool save2metas(EntityID uid, YAML::Node meta) {
+  if (!Dylinx::Instance().metas.insert(uid).second)
+    return false;
+  meta["file_name"] = std::get<0>(uid).string();
+  meta["line"] = std::get<1>(uid);
+  meta["id"] = Dylinx::Instance().lock_i;
+  Dylinx::Instance().lock_i++;
+  Dylinx::Instance().lock_decl["LockEntity"].push_back(meta);
+  return true;
 }
 
 bool save2altered_list(FileID src_id, SourceManager& sm) {
@@ -230,6 +239,8 @@ public:
   }
 };
 
+//! TODO
+// buggy for global array handling.
 class ArrayMatchHandler: public MatchFinder::MatchCallback {
 public:
   ArrayMatchHandler() {}
@@ -245,8 +256,12 @@ public:
       YAML::Node alloca;
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
         alloca["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
-      alloca["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
-      alloca["line"] = line;
+
+      EntityID uid = std::make_tuple(
+        sm.getFileEntryForID(src_id)->getName().str(),
+        sm.getSpellingLineNumber(loc),
+        sm.getSpellingColumnNumber(loc)
+      );
       alloca["id"] = Dylinx::Instance().lock_i;
       alloca["modification_type"] = ARR_ALLOCA_TYPE;
       SourceLocation size_begin, size_end;
@@ -265,7 +280,7 @@ public:
       if (d->getStorageClass() == StorageClass::SC_Static) {
         loc = Lexer::findNextToken(loc, sm, result.Context->getLangOpts())->getLocation();
         Dylinx::Instance().rw_ptr->ReplaceText(loc, 15, type_macro);
-        alloca["extra_init"] = 1;
+        alloca["extra_init"] = sm.getFileEntryForID(sm.getMainFileID())->getUID();
       } else
         Dylinx::Instance().rw_ptr->ReplaceText(d->getBeginLoc(), 15, type_macro);
 
@@ -282,8 +297,7 @@ public:
           arr_init
         );
       }
-      Dylinx::Instance().lock_i++;
-      Dylinx::Instance().lock_decl["LockEntity"].push_back(alloca);
+      save2metas(uid, alloca);
       save2altered_list(src_id, sm);
     }
   }
@@ -497,43 +511,48 @@ public:
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(VarDecl, d, sm);
 #endif
-      // Dealing with Type information
-      SourceLocation begin_loc = d->getBeginLoc();
-      SourceLocation init_loc = Lexer::findNextToken(
-        d->getEndLoc(),
-        sm,
-        result.Context->getLangOpts()
-      )->getLocation();
-      if (sm.isInSystemHeader(begin_loc))
+      if (sm.isInSystemHeader(d->getBeginLoc()))
         return;
-      FileID src_id = sm.getFileID(begin_loc);
-      uint32_t line = sm.getSpellingLineNumber(begin_loc);
-      LocID key = std::make_pair(src_id, line);
-      save2altered_list(src_id, sm);
-      YAML::Node decl_loc;
-      // Take care when user declares their mutex in the same line.
-      // Ex:
-      //    pthread_mutex_t mtx1, mtx2;
-      if (processing_type_loc != key) {
+
+      // Dealing with Type information
+      SourceLocation type_loc = d->getTypeSpecStartLoc();
+      FileID src_id = sm.getFileID(type_loc);
+      fs::path src_path = sm.getFileEntryForID(src_id)->getName().str();
+
+      // If the file is already modified just simply skip
+      if (Dylinx::Instance().altered_files.find(src_path) != Dylinx::Instance().altered_files.end())
+        return;
+
+      EntityID cur_type = std::make_tuple(
+        src_path,
+        sm.getSpellingLineNumber(type_loc),
+        sm.getSpellingColumnNumber(type_loc)
+      );
+      YAML::Node meta;
+
+      // The behavior is as following.
+      // if cur_type != pre_type
+      //    increment lock_i and insert meta
+      // else
+      //    insert meta only.
+      if (cur_type != pre_type) {
+        // Encoutering a new modifiable lock type.
         char format[50];
         sprintf(format, "DYLINX_LOCK_TYPE_%d", Dylinx::Instance().lock_i);
         Dylinx::Instance().rw_ptr->ReplaceText(
           SourceRange(d->getTypeSpecStartLoc(), d->getTypeSpecEndLoc()),
           format
         );
-        if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
-          decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
-        decl_loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
-        decl_loc["line"] = sm.getSpellingLineNumber(d->getBeginLoc());
-        decl_loc["id"] = Dylinx::Instance().lock_i;
-        decl_loc["modification_type"] = VAR_ALLOCA_TYPE;
-        lock_cnt = Dylinx::Instance().lock_i;
-        processing_type_loc = key;
-        Dylinx::Instance().lock_i++;
       }
+
+      Dylinx::Instance().require_init = true;
+      if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
+        meta["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
+      meta["modification_type"] = VAR_ALLOCA_TYPE;
 
       // Dealing with initialization
       if (!d->isStaticLocal() && d->hasGlobalStorage()) {
+        // Global variable requires extra init.
         const Token *var_name = move2n_token(d->getTypeSpecStartLoc(), 1, sm, result.Context->getLangOpts());
         if (d->hasInit()) {
           Dylinx::Instance().rw_ptr->RemoveText(
@@ -543,35 +562,33 @@ public:
             )
           );
         }
-        if (sm.getFileEntryForID(sm.getMainFileID())->getName().str().compare(Dylinx::Instance().extra_init4cu.first)) {
-          Dylinx::Instance().extra_init4cu.second++;
-          Dylinx::Instance().extra_init4cu.first = sm.getFileEntryForID(sm.getMainFileID())->getName().str();
-        }
-        decl_loc["extra_init"] = Dylinx::Instance().extra_init4cu.second;
-        decl_loc["name"] = d->getNameAsString();
-        Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
-        return;
+        if (cur_type != pre_type)
+          meta["extra_init"] = sm.getFileEntryForID(sm.getMainFileID())->getUID();
 
       } else if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
-        SourceManager& sm = result.Context->getSourceManager();
-        SourceLocation begin_loc = init_expr->getLBraceLoc();
+
         char format[100];
         sprintf(format, "DYLINX_LOCK_INIT_%d", Dylinx::Instance().lock_i);
         Dylinx::Instance().rw_ptr->ReplaceText(
-            sm.getImmediateExpansionRange(begin_loc).getAsRange(),
-            format
-            );
-        Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
-        return;
+          sm.getImmediateExpansionRange(init_expr->getBeginLoc()).getAsRange(),
+          format
+        );
+
+      } else {
+        // User doesn't specify initlist.
+        char format[50];
+        sprintf(format, " = DYLINX_LOCK_INIT_%d", lock_cnt);
+        Dylinx::Instance().rw_ptr->InsertText(d->getEndLoc(), format);
       }
-      char format[50];
-      sprintf(format, " = DYLINX_LOCK_INIT_%d", lock_cnt);
-      Dylinx::Instance().rw_ptr->InsertText(init_loc, format);
-      Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
+
+      meta["name"] = d->getNameAsString();
+      save2metas(cur_type, meta);
+      save2altered_list(src_id, sm);
+      pre_type = cur_type;
     }
   }
 private:
-  LocID processing_type_loc;
+  EntityID pre_type = {"/", -1, -1};
   uint32_t lock_cnt;
 };
 
@@ -618,6 +635,7 @@ public:
   explicit SlotIdentificationConsumer(ASTContext *Context, const LangOptions& opts): opts{opts} {}
   virtual void HandleTranslationUnit(clang::ASTContext &Context) {
     SourceManager& sm = Context.getSourceManager();
+    Dylinx::Instance().require_init = false;
     Dylinx::Instance().cu_deps.clear();
     Dylinx::Instance().rw_ptr = new Rewriter;
     Dylinx::Instance().rw_ptr->setSourceMgr(sm, opts);
@@ -920,19 +938,21 @@ public:
 #ifdef __DYLINX_DEBUG__
     printf("[ End UNIT ]\n");
 #endif
-    if (!sm.getFileEntryForID(sm.getMainFileID())->getName().str().compare(Dylinx::Instance().extra_init4cu.first)) {
+
+    if (Dylinx::Instance().require_init) {
       SourceLocation end = sm.getLocForEndOfFile(sm.getMainFileID());
+      uint32_t main_id = sm.getFileEntryForID(sm.getMainFileID())->getUID();
       char prototype[100];
       sprintf(
         prototype,
         "void __dylinx_cu_init_%d_() {\n",
-        Dylinx::Instance().extra_init4cu.second
+        main_id
       );
       std::string global_initializer(prototype);
       YAML::Node entity = Dylinx::Instance().lock_decl["LockEntity"];
       for (YAML::const_iterator it = entity.begin(); it != entity.end(); it++) {
         const YAML::Node& entity = *it;
-        if (entity["extra_init"] && entity["extra_init"].as<uint32_t>() == Dylinx::Instance().extra_init4cu.second) {
+        if (entity["extra_init"] && entity["extra_init"].as<uint32_t>() == main_id) {
           char init_mtx[50];
           sprintf(init_mtx, "\t__dylinx_member_init_(&%s, NULL);\n", entity["name"].as<std::string>().c_str());
           global_initializer.append(init_mtx);
@@ -1013,10 +1033,8 @@ int main(int argc, const char **argv) {
   tool.run(newSlotIdentificationActionFactory(compiler_db).get());
 
   std::set<fs::path>::iterator it;
-  for ( it = Dylinx::Instance().altered_files.begin(); it != Dylinx::Instance().altered_files.end(); it++) {
-    printf("appending %s\n", it->c_str());
+  for (it = Dylinx::Instance().altered_files.begin(); it != Dylinx::Instance().altered_files.end(); it++)
     Dylinx::Instance().lock_decl["AlteredFiles"].push_back(it->string());
-  }
 
   YAML::Node updated_file = Dylinx::Instance().lock_decl["AlteredFiles"];
   for (YAML::const_iterator it = updated_file.begin(); it != updated_file.end(); it++) {
