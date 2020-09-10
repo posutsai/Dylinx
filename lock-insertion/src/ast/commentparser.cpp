@@ -35,6 +35,7 @@
 
 #define ARR_ALLOCA_TYPE "ARRAY"
 #define VAR_ALLOCA_TYPE "VARIABLE"
+#define EXTERN_VAR_SYMBOL "EXTERN_VAR_SYMBOL"
 #define STRUCT_MEM_ALLOCA_TYPE "STRUCT_MEMBER"
 #define TYPEDEF_ALLOCA_TYPE "TYPEDEF"
 #define MEM_ALLOCA_TYPE "MALLOC"
@@ -547,8 +548,13 @@ public:
         );
       }
 
-      if (d->isExternC())
+      if (!d->hasDefinition()) {
+        meta["modification_type"] = EXTERN_VAR_SYMBOL;
+        meta["name"] = d->getNameAsString();
+        save2metas(cur_type, meta);
+        save2altered_list(src_id, sm);
         return;
+      }
       Dylinx::Instance().require_init = true;
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
         meta["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
