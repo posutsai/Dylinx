@@ -43,8 +43,10 @@
     SourceLocation matched_loc = ins->getBeginLoc();  \
     FileID src_id = sm.getFileID(matched_loc); \
     printf( \
-      "[ LOG FIND ] %20s L%5d, %s\n", \
-      #pattern, sm.getSpellingLineNumber(matched_loc), sm.getFileEntryForID(src_id)->getName().str().c_str() \
+      "[ LOG FIND ] %20s L%5d:%4d, %s\n", \
+      #pattern, sm.getSpellingLineNumber(matched_loc),\
+      sm.getSpellingColumnNumber(matched_loc), \
+      sm.getFileEntryForID(src_id)->getName().str().c_str() \
     ); \
   } while(0)
 
@@ -545,6 +547,8 @@ public:
         );
       }
 
+      if (d->isExternC())
+        return;
       Dylinx::Instance().require_init = true;
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
         meta["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
@@ -555,8 +559,7 @@ public:
         // Global variable requires extra init.
         const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro");
         const Token *var_name = move2n_token(d->getTypeSpecStartLoc(), 2, sm, result.Context->getLangOpts());
-        if (d->hasInit()) {
-          printf("should print out \n");
+        if (init_expr) {
           Dylinx::Instance().rw_ptr->RemoveText(
             SourceRange(
               var_name->getLocation(),
