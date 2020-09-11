@@ -36,6 +36,7 @@
 #define ARR_ALLOCA_TYPE "ARRAY"
 #define VAR_ALLOCA_TYPE "VARIABLE"
 #define EXTERN_VAR_SYMBOL "EXTERN_VAR_SYMBOL"
+#define EXTERN_ARR_SYMBOL "EXTERN_ARR_SYMBOL"
 #define STRUCT_MEM_ALLOCA_TYPE "STRUCT_MEMBER"
 #define TYPEDEF_ALLOCA_TYPE "TYPEDEF"
 #define MEM_ALLOCA_TYPE "MALLOC"
@@ -71,6 +72,7 @@ public:
   Rewriter *rw_ptr;
   std::set<EntityID> metas;
   std::set<FileID> cu_deps;
+  std::map<std::string, std::string> cu_arrs;
   std::set<fs::path> altered_files;
   std::ofstream yaml_fout;
   YAML::Node lock_decl;
@@ -244,6 +246,10 @@ public:
 
 //! TODO
 // buggy for global array handling.
+// 1. Assume there is no consecutive declaration as following.
+//    pthread_mutex_t m[2], n[5];
+//    However, according to current code structure it would be
+//    not too hard to ipmlement.
 class ArrayMatchHandler: public MatchFinder::MatchCallback {
 public:
   ArrayMatchHandler() {}
@@ -253,51 +259,65 @@ public:
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(ArrayDecl, d, sm);
 #endif
-      SourceLocation loc = d->getBeginLoc();
-      FileID src_id = sm.getFileID(loc);
-      uint32_t line = sm.getSpellingLineNumber(loc);
+      if (sm.isInSystemHeader(d->getBeginLoc()))
+        return;
+      TypeSourceInfo *type_info = d->getTypeSourceInfo();
+      TypeLoc type_loc = type_info->getTypeLoc();
+      FileID src_id = sm.getFileID(type_loc.getBeginLoc());
+      fs::path src_path = sm.getFileEntryForID(src_id)->getName().str();
+      if (Dylinx::Instance().altered_files.find(src_path) != Dylinx::Instance().altered_files.end())
+        return;
+
+      EntityID uid = std::make_tuple(
+        src_path,
+        sm.getSpellingLineNumber(type_loc.getBeginLoc()),
+        sm.getSpellingColumnNumber(type_loc.getBeginLoc())
+      );
       YAML::Node alloca;
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
         alloca["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
 
-      EntityID uid = std::make_tuple(
-        sm.getFileEntryForID(src_id)->getName().str(),
-        sm.getSpellingLineNumber(loc),
-        sm.getSpellingColumnNumber(loc)
-      );
-      alloca["id"] = Dylinx::Instance().lock_i;
-      alloca["modification_type"] = ARR_ALLOCA_TYPE;
+      // Dealing with array size
       SourceLocation size_begin, size_end;
       char array_size[50];
-      if (const ConstantArrayType *arr_type = result.Context->getAsConstantArrayType(d->getType())) {
-        sprintf(array_size, "%lu", arr_type->getSize().getZExtValue());
-      } else if (const VariableArrayType *arr_type = result.Context->getAsVariableArrayType(d->getType())) {
-        size_begin = arr_type->getLBracketLoc().getLocWithOffset(1);
-        size_end = arr_type->getRBracketLoc();
-        SourceRange size_range(size_begin, size_end);
-        sprintf(array_size, "%s", Lexer::getSourceText(CharSourceRange(size_range, false), sm, result.Context->getLangOpts()).str().c_str());
-      } else { perror("Array type is neither constant nor variable\n"); };
+      SourceRange size_range;
+      if (const ConstantArrayTypeLoc arr_type = type_loc.getAs<ConstantArrayTypeLoc>())
+        size_range = arr_type.getSizeExpr()->getSourceRange();
+      else if (const VariableArrayTypeLoc arr_type = type_loc.getAs<VariableArrayTypeLoc>())
+        size_range = arr_type.getSizeExpr()->getSourceRange();
+      else {
+        exit(-1);
+        perror("Array type is neither constant nor variable\n");
+      }
 
+      // Replace type
       char type_macro[50];
-      sprintf(type_macro, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
-      if (d->getStorageClass() == StorageClass::SC_Static) {
-        loc = Lexer::findNextToken(loc, sm, result.Context->getLangOpts())->getLocation();
-        Dylinx::Instance().rw_ptr->ReplaceText(loc, 15, type_macro);
-        alloca["extra_init"] = sm.getFileEntryForID(sm.getMainFileID())->getUID();
-      } else
-        Dylinx::Instance().rw_ptr->ReplaceText(d->getBeginLoc(), 15, type_macro);
+      sprintf(type_macro, "DYLINX_LOCK_TYPE_%d", Dylinx::Instance().lock_i);
+      SourceLocation type_start = d->getTypeSpecStartLoc();
+      Dylinx::Instance().rw_ptr->ReplaceText(type_start, 15, type_macro);
+      alloca["name"] = d->getNameAsString();
 
-      if (d->getStorageClass() != StorageClass::SC_Static || d->isStaticLocal()) {
-        char arr_init[100];
-        sprintf(
-          arr_init,
-          " FILL_ARRAY( %s, (%s) * sizeof(pthread_mutex_t));",
-          d->getNameAsString().c_str(),
-          array_size
-        );
+      if (d->getStorageClass() == StorageClass::SC_Extern) {
+        alloca["modification_type"] = EXTERN_ARR_SYMBOL;
+        save2metas(uid, alloca);
+        save2altered_list(src_id, sm);
+        return;
+      }
+
+      alloca["modification_type"] = ARR_ALLOCA_TYPE;
+      Dylinx::Instance().require_init = true;
+
+      CharSourceRange size_char_rng = Lexer::getAsCharRange(size_range, sm, result.Context->getLangOpts());
+      size_char_rng.setEnd(size_char_rng.getEnd());
+      std::string size_src = Lexer::getSourceText(size_char_rng, sm, result.Context->getLangOpts()).str();
+
+      if (!d->isStaticLocal() && d->hasGlobalStorage()) {
+        alloca["extra_init"] = sm.getFileEntryForID(sm.getMainFileID())->getUID();
+        Dylinx::Instance().cu_arrs[d->getNameAsString()] = size_src;
+      } else {
         Dylinx::Instance().rw_ptr->InsertTextAfter(
           d->getEndLoc().getLocWithOffset(2),
-          arr_init
+          size_src
         );
       }
       save2metas(uid, alloca);
@@ -648,6 +668,7 @@ public:
     SourceManager& sm = Context.getSourceManager();
     Dylinx::Instance().require_init = false;
     Dylinx::Instance().cu_deps.clear();
+    Dylinx::Instance().cu_arrs.clear();
     Dylinx::Instance().rw_ptr = new Rewriter;
     Dylinx::Instance().rw_ptr->setSourceMgr(sm, opts);
 
@@ -964,8 +985,18 @@ public:
       for (YAML::const_iterator it = entity.begin(); it != entity.end(); it++) {
         const YAML::Node& entity = *it;
         if (entity["extra_init"] && entity["extra_init"].as<uint32_t>() == main_id) {
-          char init_mtx[50];
-          sprintf(init_mtx, "\t__dylinx_member_init_(&%s, NULL);\n", entity["name"].as<std::string>().c_str());
+          char init_mtx[200];
+          std::string var_name = entity["name"].as<std::string>();
+          if (entity["modification_type"].as<std::string>() == std::string(ARR_ALLOCA_TYPE)) {
+            sprintf(
+              init_mtx,
+              "\t__dylinx_array_init_(&%s, %s);\n",
+              var_name.c_str(),
+              Dylinx::Instance().cu_arrs[var_name].c_str()
+            );
+          }
+          else
+            sprintf(init_mtx, "\t__dylinx_member_init_(&%s, NULL);\n", var_name.c_str());
           global_initializer.append(init_mtx);
         }
       }
