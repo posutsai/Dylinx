@@ -77,8 +77,6 @@ public:
   std::ofstream yaml_fout;
   YAML::Node lock_decl;
   uint32_t lock_i = 0;
-  std::map<std::string, std::vector<uint32_t>> lock_member_ids;
-  std::set<std::tuple<std::string, std::string>> inserted_member;
   fs::path temp_dir;
   bool require_init;
 private:
@@ -422,42 +420,32 @@ public:
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(StructField, fd, sm);
 #endif
-      FileID src_id = sm.getFileID(fd->getBeginLoc());
+      SourceLocation begin_loc = fd->getBeginLoc();
+      FileID src_id = sm.getFileID(begin_loc);
+      fs::path src_path = sm.getFileEntryForID( sm.getFileID(begin_loc))->getName().str();
+      EntityID uid = std::make_tuple(
+        src_path,
+        sm.getSpellingLineNumber(begin_loc),
+        sm.getSpellingColumnNumber(begin_loc)
+      );
       std::string recr_name = fd->getParent()->getNameAsString();
-      recr_name = "struct " + recr_name;
+      YAML::Node decl_loc;
+      if (recr_name.length() == 0)
+        decl_loc["record_name"] = "0_anonymous_0";
+      else
+        decl_loc["record_name"] = recr_name;
       std::string field_name = fd->getNameAsString();
-      if (Dylinx::Instance().inserted_member.find(
-            std::make_tuple(recr_name, field_name)
-          ) != Dylinx::Instance().inserted_member.end())
-        return;
+      decl_loc["field_name"] = field_name;
       char format[50];
-      sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
+      sprintf(format, "DYLINX_LOCK_TYPE_%d", Dylinx::Instance().lock_i);
       Dylinx::Instance().rw_ptr->ReplaceText(
         SourceRange(fd->getTypeSpecStartLoc(), fd->getTypeSpecEndLoc()),
         format
       );
-      Dylinx::Instance().inserted_member.insert(
-        std::make_tuple(recr_name, field_name)
-      );
-      YAML::Node decl_loc;
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(fd))
         decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
-      decl_loc["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
-      decl_loc["line"] = sm.getSpellingLineNumber(fd->getBeginLoc());
-      decl_loc["id"] = Dylinx::Instance().lock_i;
       decl_loc["modification_type"] = STRUCT_MEM_ALLOCA_TYPE;
-      if (Dylinx::Instance().lock_member_ids.find(recr_name) == Dylinx::Instance().lock_member_ids.end()) {
-        Dylinx::Instance().lock_member_ids[recr_name] = std::vector<uint32_t>();
-        Dylinx::Instance().lock_member_ids[recr_name].push_back(
-          Dylinx::Instance().lock_i
-        );
-      } else {
-        Dylinx::Instance().lock_member_ids[recr_name].push_back(
-          Dylinx::Instance().lock_i
-        );
-      }
-      Dylinx::Instance().lock_i++;
-      Dylinx::Instance().lock_decl["LockEntity"].push_back(decl_loc);
+      save2metas(uid, decl_loc);
       save2altered_list(src_id, sm);
     }
   }
@@ -879,12 +867,12 @@ public:
     //
     //    typedef DYLINX_LOCK_TYPE_1 MyLock;
     //
-    matcher.addMatcher(
-      typedefDecl(hasType(qualType(hasDeclaration(
-        recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))
-        )))).bind("record_alias"),
-      &handler_for_record_alias
-    );
+    // matcher.addMatcher(
+    //   typedefDecl(hasType(qualType(hasDeclaration(
+    //     recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))
+    //     )))).bind("record_alias"),
+    //   &handler_for_record_alias
+    // );
 
     // Match all funtion call including
     // a. pthread_mutex_lock
