@@ -210,7 +210,11 @@ public:
     const CallExpr *call_expr;
     SourceManager& sm = result.Context->getSourceManager();
     std::string ptr_name;
+    SourceLocation stmt_start;
+    SourceLocation stmt_end;
     if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("res_decl")) {
+      stmt_start = vd->getBeginLoc();
+      stmt_end = vd->getEndLoc();
       ptr_name = vd->getNameAsString();
       call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call");
       SourceLocation loc = vd->getBeginLoc();
@@ -220,6 +224,8 @@ public:
       DeclRefExpr *drefexpr = dyn_cast<DeclRefExpr>(binop->getLHS());
       ptr_name = drefexpr->getNameInfo().getAsString();
       call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call");
+      stmt_start = drefexpr->getBeginLoc();
+      stmt_end = call_expr->getEndLoc();
     } else {
       perror("Runtime error malloc matcher operation fault!\n");
       exit(-1);
@@ -251,8 +257,8 @@ public:
         sm, result.Context->getLangOpts()
       ).str().find_last_of(",");
       SourceRange cnt_range(
-        sm.getImmediateSpellingLoc(arg0_expr->getBeginLoc()),
-        sm.getImmediateSpellingLoc(arg0_expr->getEndLoc().getLocWithOffset(arg0_len))
+        arg0_expr->getBeginLoc(),
+        arg0_expr->getEndLoc().getLocWithOffset(arg0_len)
       );
       SourceRange unit_range(
         arg1_expr->getBeginLoc(),
@@ -269,7 +275,7 @@ public:
       exit(-1);
     }
     Dylinx::Instance().rw_ptr->ReplaceText(
-      SourceRange(call_expr->getBeginLoc(), call_expr->getEndLoc()),
+      SourceRange(stmt_start, stmt_end),
       size_expr
     );
   }
