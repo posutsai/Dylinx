@@ -207,39 +207,70 @@ class MallocMatchHandler: public MatchFinder::MatchCallback {
 public:
   MallocMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
-    const CallExpr *e;
+    const CallExpr *call_expr;
     SourceManager& sm = result.Context->getSourceManager();
-#ifdef __DYLINX_DEBUG__
-      DEBUG_LOG(PtrDecl, e, sm);
-#endif
     std::string ptr_name;
-    if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("malloc_decl")) {
+    if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("res_decl")) {
       ptr_name = vd->getNameAsString();
-      e = result.Nodes.getNodeAs<CallExpr>("malloc_decl_callexpr");
+      call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call");
       SourceLocation loc = vd->getBeginLoc();
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
-    } else if (const BinaryOperator *binop = result.Nodes.getNodeAs<BinaryOperator>("malloc_assign")) {
+    } else if (const BinaryOperator *binop = result.Nodes.getNodeAs<BinaryOperator>("res_assign")) {
       DeclRefExpr *drefexpr = dyn_cast<DeclRefExpr>(binop->getLHS());
       ptr_name = drefexpr->getNameInfo().getAsString();
-      e = result.Nodes.getNodeAs<CallExpr>("malloc_assign_callexpr");
+      call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call");
     } else {
       perror("Runtime error malloc matcher operation fault!\n");
+      exit(-1);
     }
-    if(!e)
+    if(!call_expr)
       return;
-    char arr_init[100];
-    SourceLocation size_begin = e->getArg(0)->getBeginLoc();
-    SourceLocation size_end = e->getRParenLoc();
-    SourceRange range(size_begin, size_end);
-    sprintf(
-      arr_init, " FILL_ARRAY(%s, %s);",
-      ptr_name.c_str(),
-      Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str()
-    );
-    Dylinx::Instance().rw_ptr->InsertTextAfter(
-      e->getEndLoc().getLocWithOffset(2),
-      arr_init
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(PtrDecl, call_expr, sm);
+#endif
+    char size_expr[300];
+    if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("malloc")) {
+      const Expr *arg_expr = call_expr->getArg(0);
+      SourceLocation arg_begin = arg_expr->getBeginLoc();
+      SourceLocation arg_end = arg_expr->getEndLoc().getLocWithOffset(1);
+      SourceRange range(arg_begin, arg_end);
+      sprintf(
+        size_expr, "__dylinx_array_init_(%s, %s);",
+        ptr_name.c_str(),
+        Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str()
+      );
+    } else if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("calloc")) {
+      const Expr *arg0_expr = call_expr->getArg(0);
+      const Expr *arg1_expr = call_expr->getArg(1);
+      size_t arg0_len = Lexer::getSourceText(
+        CharSourceRange(
+          SourceRange(arg0_expr->getBeginLoc(), arg1_expr->getBeginLoc()),
+          false
+        ),
+        sm, result.Context->getLangOpts()
+      ).str().find_last_of(",");
+      SourceRange cnt_range(
+        sm.getImmediateSpellingLoc(arg0_expr->getBeginLoc()),
+        sm.getImmediateSpellingLoc(arg0_expr->getEndLoc().getLocWithOffset(arg0_len))
+      );
+      SourceRange unit_range(
+        arg1_expr->getBeginLoc(),
+        arg1_expr->getEndLoc().getLocWithOffset(1)
+      );
+      sprintf(
+        size_expr, "__dylinx_array_init_(%s, (%s) * (%s));",
+        ptr_name.c_str(),
+        Lexer::getSourceText(CharSourceRange(cnt_range, false), sm, result.Context->getLangOpts()).str().c_str(),
+        Lexer::getSourceText(CharSourceRange(unit_range, false), sm, result.Context->getLangOpts()).str().c_str()
+      );
+    } else {
+      perror("Runtime error malloc matcher operation fault!\n");
+      exit(-1);
+    }
+    Dylinx::Instance().rw_ptr->ReplaceText(
+      SourceRange(call_expr->getBeginLoc(), call_expr->getEndLoc()),
+      size_expr
     );
   }
 };
@@ -727,24 +758,51 @@ public:
     matcher.addMatcher(
       varDecl(
         hasType(asString("pthread_mutex_t *")),
-        hasInitializer(hasDescendant(
-          callExpr(
-            callee(functionDecl(hasName("malloc"))),
-            hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
-          )).bind("malloc_decl_callexpr")
-        ))).bind("malloc_decl"),
+        anyOf(
+          hasInitializer(hasDescendant(
+            callExpr(
+              callee(functionDecl(hasName("malloc"))),
+              hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
+            )).bind("alloc_call")
+          )),
+          hasInitializer(hasDescendant(
+            callExpr(
+              callee(functionDecl(hasName("calloc"))),
+              hasArgument(1, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
+            )).bind("alloc_call")
+          )),
+          hasInitializer(hasDescendant(
+            callExpr(
+              callee(functionDecl(hasName("calloc"))),
+              hasArgument(1, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
+            )).bind("alloc_call")
+          ))
+        )
+      ).bind("res_decl"),
       &handler_for_malloc
     );
 
     matcher.addMatcher(
       binaryOperator(
         hasOperatorName("="),
-        hasRHS(hasDescendant(
-         callExpr(callee(
-          functionDecl(hasName("malloc"))),
-          hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
-        )).bind("malloc_assign_callexpr")))
-      ).bind("malloc_assign"),
+        anyOf(
+          hasRHS(hasDescendant(
+           callExpr(callee(
+            functionDecl(hasName("malloc"))),
+            hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
+          )).bind("alloc_call"))),
+          hasRHS(hasDescendant(
+           callExpr(callee(
+            functionDecl(hasName("calloc"))),
+            hasArgument(1, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
+          )).bind("alloc_call"))),
+          hasRHS(hasDescendant(
+           callExpr(callee(
+            functionDecl(hasName("realloc"))),
+            hasArgument(1, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
+          )).bind("alloc_call")))
+        )
+      ).bind("res_assign"),
       &handler_for_malloc
     );
 
