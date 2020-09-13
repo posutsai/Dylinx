@@ -508,6 +508,8 @@ public:
       meta["modification_type"] = VAR_FIELD_INIT;
 
       if (!vd->isStaticLocal() && vd->hasGlobalStorage()) {
+        printf("should print\n");
+        Dylinx::Instance().require_init = true;
         meta["extra_init"] = sm.getFileEntryForID(sm.getMainFileID())->getUID();
         Dylinx::Instance().cu_recr[vd->getNameAsString()] = init_str;
       } else {
@@ -529,8 +531,8 @@ public:
           concat_init
         );
       }
-
-      return;
+      save2metas(uid, meta);
+      save2altered_list(src_id, sm);
     }
     return;
     if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("struct_member_init")) {
@@ -1121,6 +1123,20 @@ public:
               var_name.c_str(),
               Dylinx::Instance().cu_arrs[var_name].c_str()
             );
+          } else if (entity["modification_type"].as<std::string>() == std::string(VAR_FIELD_INIT)) {
+            std::vector<std::string> init_str = Dylinx::Instance().cu_recr[var_name];
+            std::string concat_init = "";
+            for (auto it = init_str.begin(); it != init_str.end(); it++) {
+              std::string field_name = var_name + *it;
+              sprintf(
+                init_mtx,
+                "\t__dylinx_member_init_(&%s, NULL);\n",
+                field_name.c_str()
+              );
+              concat_init = concat_init + init_mtx;
+            }
+            global_initializer.append(concat_init);
+            continue;
           }
           else
             sprintf(init_mtx, "\t__dylinx_member_init_(&%s, NULL);\n", var_name.c_str());
