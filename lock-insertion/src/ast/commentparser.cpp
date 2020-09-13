@@ -451,16 +451,49 @@ public:
   }
 };
 
+void traverse_init_fields(const RecordDecl *recr, std::vector<std::string>& init_str, std::vector<std::string>& field_seq) {
+  for (auto iter = recr->field_begin(); iter != recr->field_end(); iter++) {
+    const clang::Type *t = iter->getType().getTypePtr();
+    std::string type_name = t->getCanonicalTypeInternal().getAsString();
+    if (t->isRecordType() && type_name != "pthread_mutex_t") {
+      field_seq.push_back(iter->getNameAsString());
+      traverse_init_fields(t->getAsStructureType()->getDecl(), init_str, field_seq);
+    }
+    else if (type_name == "pthread_mutex_t") {
+      std::string prefix = "";
+      for (auto el = field_seq.begin(); el != field_seq.end(); el++)
+        prefix = prefix + std::string(".") + *el;
+      init_str.push_back(prefix + std::string(".") + iter->getNameAsString());
+    } else {
+      continue;
+    }
+  }
+  if (field_seq.size())
+    field_seq.pop_back();
+}
+
+//! TODO
+//  Refine struct variable to init immediately.
 class InitlistMatchHandler: public MatchFinder::MatchCallback {
 public:
   InitlistMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
-    if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("struct_member_init")) {
-
+    if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("struct_instance")) {
       SourceManager& sm = result.Context->getSourceManager();
 #ifdef __DYLINX_DEBUG__
-      DEBUG_LOG(Initlist, init_expr, sm);
+      DEBUG_LOG(StructDecl, vd, sm);
 #endif
+      std::vector<std::string> init_str;
+      std::vector<std::string> field_seq;
+      traverse_init_fields(vd->getType().getTypePtr()->getAsRecordDecl(), init_str, field_seq);
+      printf("len is %d\n", init_str.size());
+      for (auto it = init_str.begin(); it != init_str.end(); it++)
+        printf("%s\n", it->c_str());
+      return;
+    }
+    return;
+    if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("struct_member_init")) {
+      SourceManager& sm = result.Context->getSourceManager();
       if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("struct_instance")) {
         counter = 0;
         recr_name = vd->getType().getTypePtr()->getUnqualifiedDesugaredType()->getCanonicalTypeInternal().getAsString();
@@ -847,14 +880,15 @@ public:
     matcher.addMatcher(
       varDecl(
         hasType(hasUnqualifiedDesugaredType(recordType(
-          hasDeclaration(recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))
-        )))),
+          hasDeclaration(recordDecl(has(fieldDecl())))
+        ))),
+        optionally(
         forEachDescendant(
           initListExpr(hasSyntacticForm(
             hasType(asString("pthread_mutex_t"))
           )).bind("struct_member_init")
-        )
-      ) .bind("struct_instance"),
+        ))
+      ).bind("struct_instance"),
       &handler_for_initlist
     );
 
