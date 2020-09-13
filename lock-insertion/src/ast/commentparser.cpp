@@ -203,6 +203,7 @@ public:
   }
 };
 
+// TODO type assignment
 class MallocMatchHandler: public MatchFinder::MatchCallback {
 public:
   MallocMatchHandler() {}
@@ -212,11 +213,14 @@ public:
     std::string ptr_name;
     SourceLocation stmt_start;
     SourceLocation stmt_end;
+    bool assign_after_decl = false;
     if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("res_decl")) {
-      stmt_start = vd->getBeginLoc();
-      stmt_end = vd->getEndLoc();
+      assign_after_decl = true;
+      // stmt_start = vd->getEndLoc().getLocWithOffset(1);
       ptr_name = vd->getNameAsString();
+      stmt_start = vd->getTypeSpecEndLoc().getLocWithOffset(ptr_name.length() + 1);
       call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call");
+      stmt_end = call_expr->getEndLoc().getLocWithOffset(1);
       SourceLocation loc = vd->getBeginLoc();
       FileID src_id = sm.getFileID(loc);
       uint32_t line = sm.getSpellingLineNumber(loc);
@@ -242,7 +246,8 @@ public:
       SourceLocation arg_end = arg_expr->getEndLoc().getLocWithOffset(1);
       SourceRange range(arg_begin, arg_end);
       sprintf(
-        size_expr, "__dylinx_array_init_(%s, %s);",
+        size_expr, "%s __dylinx_array_init_(%s, (%s) / sizeof(pthread_mutex_t));",
+        assign_after_decl? ";": "",
         ptr_name.c_str(),
         Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str()
       );
@@ -265,7 +270,7 @@ public:
         arg1_expr->getEndLoc().getLocWithOffset(1)
       );
       sprintf(
-        size_expr, "__dylinx_array_init_(%s, (%s) * (%s));",
+        size_expr, "__dylinx_array_init_(%s, ((%s) * (%s)) / sizeof(pthread_mutex_t));",
         ptr_name.c_str(),
         Lexer::getSourceText(CharSourceRange(cnt_range, false), sm, result.Context->getLangOpts()).str().c_str(),
         Lexer::getSourceText(CharSourceRange(unit_range, false), sm, result.Context->getLangOpts()).str().c_str()
@@ -479,6 +484,9 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("struct_instance")) {
       SourceManager& sm = result.Context->getSourceManager();
+      recr_name = vd->getType().getTypePtr()->getUnqualifiedDesugaredType()->getCanonicalTypeInternal().getAsString();
+      if (recr_name == "pthread_mutex_t")
+        return;
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(StructDecl, vd, sm);
 #endif
@@ -622,15 +630,15 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("vars")) {
       SourceManager& sm = result.Context->getSourceManager();
-#ifdef __DYLINX_DEBUG__
-      DEBUG_LOG(VarDecl, d, sm);
-#endif
+// #ifdef __DYLINX_DEBUG__
+//       DEBUG_LOG(VarDecl, d, sm);
+// #endif
       if (sm.isInSystemHeader(d->getBeginLoc()))
         return;
 
       // Dealing with Type information
       SourceLocation type_loc = d->getTypeSpecStartLoc();
-      FileID src_id = sm.getFileID(type_loc);
+      FileID src_id = sm.getFileID(sm.getSpellingLoc(type_loc));
       fs::path src_path = sm.getFileEntryForID(src_id)->getName().str();
 
       // If the file is already modified just simply skip
@@ -653,10 +661,24 @@ public:
         // Encoutering a new modifiable lock type.
         char format[50];
         sprintf(format, "DYLINX_LOCK_TYPE_%d", Dylinx::Instance().lock_i);
-        Dylinx::Instance().rw_ptr->ReplaceText(
-          SourceRange(d->getTypeSpecStartLoc(), d->getTypeSpecEndLoc()),
-          format
-        );
+        if (sm.isAtStartOfImmediateMacroExpansion(type_loc)) {
+          Dylinx::Instance().rw_ptr->ReplaceText(
+            // SourceRange(
+            //   d->getTypeSpecStartLoc(),
+            //   d->getTypeSpecEndLoc()
+            // ),
+            sm.getImmediateExpansionRange(d->getTypeSpecStartLoc()).getAsRange(),
+            format
+          );
+        } else {
+          Dylinx::Instance().rw_ptr->ReplaceText(
+            SourceRange(
+              d->getTypeSpecStartLoc(),
+              d->getTypeSpecEndLoc()
+            ),
+            format
+          );
+        }
       }
       std::string var_name = d->getNameAsString();
       if (!d->hasDefinition()) {
