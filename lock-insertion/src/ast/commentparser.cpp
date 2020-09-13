@@ -379,26 +379,16 @@ public:
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(TypedeDecl, d, sm);
 #endif
-      const Token *token = move2n_token(d->getBeginLoc(), 1, sm, result.Context->getLangOpts());
+      SourceLocation begin_loc = d->getBeginLoc();
+      const Token *token = move2n_token(begin_loc, 1, sm, result.Context->getLangOpts());
+      FileID src_id = sm.getFileID(begin_loc);
       char format[100];
-      sprintf(format, "DYLINX_LOCK_MACRO_%d", Dylinx::Instance().lock_i);
+      sprintf(format, "general_interface_t *", Dylinx::Instance().lock_i);
       Dylinx::Instance().rw_ptr->ReplaceText(
         token->getLocation(),
         token->getLength(),
         format
       );
-      SourceLocation loc = d->getBeginLoc();
-      FileID src_id = sm.getFileID(loc);
-      uint32_t line = sm.getSpellingLineNumber(loc);
-      YAML::Node lock_meta;
-      if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
-        lock_meta["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
-      lock_meta["file_name"] = sm.getFileEntryForID(src_id)->getName().str();
-      lock_meta["line"] = line;
-      lock_meta["id"] = Dylinx::Instance().lock_i;
-      lock_meta["modification_type"] = TYPEDEF_ALLOCA_TYPE;
-      Dylinx::Instance().lock_i++;
-      Dylinx::Instance().lock_decl["LockEntity"].push_back(lock_meta);
       save2altered_list(src_id, sm);
     }
   }
@@ -668,10 +658,10 @@ public:
           format
         );
       }
-
+      std::string var_name = d->getNameAsString();
       if (!d->hasDefinition()) {
         meta["modification_type"] = EXTERN_VAR_SYMBOL;
-        meta["name"] = d->getNameAsString();
+        meta["name"] = var_name;
         save2metas(cur_type, meta);
         save2altered_list(src_id, sm);
         return;
@@ -685,11 +675,11 @@ public:
       if (!d->isStaticLocal() && d->hasGlobalStorage()) {
         // Global variable requires extra init.
         const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro");
-        const Token *var_name = move2n_token(d->getTypeSpecStartLoc(), 2, sm, result.Context->getLangOpts());
+        const Token *var_token = move2n_token(d->getTypeSpecStartLoc(), 2, sm, result.Context->getLangOpts());
         if (init_expr) {
           Dylinx::Instance().rw_ptr->RemoveText(
             SourceRange(
-              var_name->getLocation(),
+              var_token->getLocation(),
               sm.getImmediateExpansionRange(init_expr->getBeginLoc()).getEnd()
             )
           );
@@ -709,11 +699,14 @@ public:
       } else {
         // User doesn't specify initlist.
         char format[50];
-        sprintf(format, " = DYLINX_LOCK_INIT_%d", lock_cnt);
-        Dylinx::Instance().rw_ptr->InsertText(d->getEndLoc(), format);
+        sprintf(format, " = DYLINX_LOCK_INIT_%d", Dylinx::Instance().lock_i);
+        Dylinx::Instance().rw_ptr->InsertTextAfter(
+          d->getEndLoc().getLocWithOffset(var_name.length()),
+          format
+        );
       }
 
-      meta["name"] = d->getNameAsString();
+      meta["name"] = var_name;
       save2metas(cur_type, meta);
       save2altered_list(src_id, sm);
       pre_type = cur_type;
@@ -787,9 +780,14 @@ public:
     // On the other hand, if the lock is declared in the global
     // scope, whole global locks no matter static or not will be
     // initialized when entering main function.
+#ifndef __linux
+#error Current implementation is only for linux. VarDecl matcher rely on POSIX implementation.
+#endif
     matcher.addMatcher(
       varDecl(
-        hasType(asString("pthread_mutex_t")),
+        hasType(hasUnqualifiedDesugaredType(recordType(
+          hasDeclaration(recordDecl(has(fieldDecl(hasType(asString("struct __pthread_mutex_s"))))))
+        ))),
         optionally(has(
           initListExpr(hasSyntacticForm(hasType(asString("pthread_mutex_t")))).bind("init_macro")
         ))).bind("vars"),
@@ -812,10 +810,9 @@ public:
     //    typedef general_interface_t MyLock
     //    typedef general_interface_t *MyLock
     matcher.addMatcher(
-      typedefDecl(eachOf(
-        hasType(asString("pthread_mutex_t")),
+      typedefDecl(
         hasType(asString("pthread_mutex_t *"))
-      )).bind("typedefs"),
+      ).bind("typedefs"),
       &handler_for_typedef
     );
 
