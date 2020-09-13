@@ -37,7 +37,8 @@
 #define VAR_ALLOCA_TYPE "VARIABLE"
 #define EXTERN_VAR_SYMBOL "EXTERN_VAR_SYMBOL"
 #define EXTERN_ARR_SYMBOL "EXTERN_ARR_SYMBOL"
-#define STRUCT_MEM_ALLOCA_TYPE "STRUCT_MEMBER"
+#define VAR_FIELD_INIT "VAR_FIELD_INIT"
+#define FIELD_INSERT "FIELD_INSERT"
 #define TYPEDEF_ALLOCA_TYPE "TYPEDEF"
 #define MEM_ALLOCA_TYPE "MALLOC"
 #define DEBUG_LOG(pattern, ins, sm)  \
@@ -73,6 +74,7 @@ public:
   std::set<EntityID> metas;
   std::set<FileID> cu_deps;
   std::map<std::string, std::string> cu_arrs;
+  std::map<std::string, std::vector<std::string>> cu_recr;
   std::set<fs::path> altered_files;
   std::ofstream yaml_fout;
   YAML::Node lock_decl;
@@ -350,9 +352,16 @@ public:
         alloca["extra_init"] = sm.getFileEntryForID(sm.getMainFileID())->getUID();
         Dylinx::Instance().cu_arrs[d->getNameAsString()] = size_src;
       } else {
+        char init_mtx[200];
+        sprintf(
+          init_mtx,
+          "\t__dylinx_array_init_(&%s, %s);\n",
+          d->getNameAsString().c_str(),
+          size_src.c_str()
+        );
         Dylinx::Instance().rw_ptr->InsertTextAfter(
           d->getEndLoc().getLocWithOffset(2),
-          size_src
+          init_mtx
         );
       }
       save2metas(uid, alloca);
@@ -444,7 +453,7 @@ public:
       );
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(fd))
         decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
-      decl_loc["modification_type"] = STRUCT_MEM_ALLOCA_TYPE;
+      decl_loc["modification_type"] = FIELD_INSERT;
       save2metas(uid, decl_loc);
       save2altered_list(src_id, sm);
     }
@@ -483,12 +492,44 @@ public:
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(StructDecl, vd, sm);
 #endif
+      SourceLocation begin_loc = vd->getBeginLoc();
+      FileID src_id = sm.getFileID(begin_loc);
+      fs::path src_path = sm.getFileEntryForID(src_id)->getName().str();
+      EntityID uid = std::make_tuple(
+        src_path,
+        sm.getSpellingLineNumber(begin_loc),
+        sm.getSpellingColumnNumber(begin_loc)
+      );
       std::vector<std::string> init_str;
       std::vector<std::string> field_seq;
       traverse_init_fields(vd->getType().getTypePtr()->getAsRecordDecl(), init_str, field_seq);
-      printf("len is %d\n", init_str.size());
-      for (auto it = init_str.begin(); it != init_str.end(); it++)
-        printf("%s\n", it->c_str());
+      YAML::Node meta;
+      meta["name"] = vd->getNameAsString();
+      meta["modification_type"] = VAR_FIELD_INIT;
+
+      if (!vd->isStaticLocal() && vd->hasGlobalStorage()) {
+        meta["extra_init"] = sm.getFileEntryForID(sm.getMainFileID())->getUID();
+        Dylinx::Instance().cu_recr[vd->getNameAsString()] = init_str;
+      } else {
+        std::string var_name = vd->getNameAsString();
+        std::string concat_init = "";
+        for (auto it = init_str.begin(); it != init_str.end(); it++) {
+          char init_field[200];
+          std::string field_name = var_name + *it;
+          printf("%s\n", field_name.c_str());
+          sprintf(
+            init_field,
+            "\t__dylinx_member_init_(&%s, NULL);\n",
+            field_name.c_str()
+          );
+          concat_init = concat_init + init_field;
+        }
+        Dylinx::Instance().rw_ptr->InsertTextAfter(
+          vd->getEndLoc().getLocWithOffset(var_name.size() + 2),
+          concat_init
+        );
+      }
+
       return;
     }
     return;
