@@ -40,7 +40,7 @@
 #define VAR_FIELD_INIT "VAR_FIELD_INIT"
 #define FIELD_INSERT "FIELD_INSERT"
 #define TYPEDEF_ALLOCA_TYPE "TYPEDEF"
-#define MEM_ALLOCA_TYPE "MALLOC"
+#define MEM_ALLOCA_TYPE "MEM_ALLOCATION"
 #define DEBUG_LOG(pattern, ins, sm)  \
   do {                      \
     SourceLocation matched_loc = ins->getBeginLoc();  \
@@ -214,31 +214,56 @@ public:
     SourceLocation stmt_start;
     SourceLocation stmt_end;
     bool assign_after_decl = false;
+    FileID src_id;
     if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("res_decl")) {
+      if (sm.isInSystemHeader(vd->getBeginLoc()))
+        return;
       assign_after_decl = true;
-      // stmt_start = vd->getEndLoc().getLocWithOffset(1);
       ptr_name = vd->getNameAsString();
       stmt_start = vd->getTypeSpecEndLoc().getLocWithOffset(ptr_name.length() + 1);
       call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call");
-      stmt_end = call_expr->getEndLoc().getLocWithOffset(1);
-      SourceLocation loc = vd->getBeginLoc();
-      FileID src_id = sm.getFileID(loc);
-      uint32_t line = sm.getSpellingLineNumber(loc);
+      if (call_expr)
+        stmt_end = call_expr->getEndLoc().getLocWithOffset(1);
+      SourceLocation type_start = vd->getTypeSpecStartLoc();
+      SourceLocation type_end = vd->getTypeSpecEndLoc();
+      if (sm.isAtStartOfImmediateMacroExpansion(type_start)) {
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          sm.getImmediateExpansionRange(type_start).getAsRange(),
+          "general_interface_t *"
+        );
+      } else {
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          SourceRange(type_start, type_end),
+          "general_interface_t *"
+        );
+      }
+
     } else if (const BinaryOperator *binop = result.Nodes.getNodeAs<BinaryOperator>("res_assign")) {
       DeclRefExpr *drefexpr = dyn_cast<DeclRefExpr>(binop->getLHS());
       ptr_name = drefexpr->getNameInfo().getAsString();
       call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call");
       stmt_start = drefexpr->getBeginLoc();
       stmt_end = call_expr->getEndLoc();
+      Expr *lhs = binop->getLHS();
     } else {
       perror("Runtime error malloc matcher operation fault!\n");
       exit(-1);
     }
-    if(!call_expr)
+    src_id = sm.getFileID(stmt_start);
+    save2altered_list(src_id, sm);
+
+    if(!call_expr) {
       return;
+    }
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(PtrDecl, call_expr, sm);
 #endif
+    YAML::Node meta;
+    EntityID uid = std::make_tuple(
+      sm.getFileEntryForID(src_id)->getName().str(),
+      sm.getSpellingLineNumber(stmt_start),
+      sm.getSpellingColumnNumber(stmt_start)
+    );
     char size_expr[300];
     if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("malloc")) {
       const Expr *arg_expr = call_expr->getArg(0);
@@ -246,10 +271,11 @@ public:
       SourceLocation arg_end = arg_expr->getEndLoc().getLocWithOffset(1);
       SourceRange range(arg_begin, arg_end);
       sprintf(
-        size_expr, "%s __dylinx_array_init_(%s, (%s) / sizeof(pthread_mutex_t));",
+        size_expr, "%s __dylinx_ptr_unit_init_(%s, (%s) / sizeof(pthread_mutex_t), DYLINX_LOCK_TYPE_%d);",
         assign_after_decl? ";": "",
         ptr_name.c_str(),
-        Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str()
+        Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str(),
+        Dylinx::Instance().lock_i
       );
     } else if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("calloc")) {
       const Expr *arg0_expr = call_expr->getArg(0);
@@ -270,19 +296,23 @@ public:
         arg1_expr->getEndLoc().getLocWithOffset(1)
       );
       sprintf(
-        size_expr, "__dylinx_array_init_(%s, ((%s) * (%s)) / sizeof(pthread_mutex_t));",
+        size_expr, "__dylinx_ptr_unit_init_(%s, ((%s) * (%s)) / sizeof(pthread_mutex_t), DYLINX_LOCK_TYPE_%d);",
         ptr_name.c_str(),
         Lexer::getSourceText(CharSourceRange(cnt_range, false), sm, result.Context->getLangOpts()).str().c_str(),
-        Lexer::getSourceText(CharSourceRange(unit_range, false), sm, result.Context->getLangOpts()).str().c_str()
+        Lexer::getSourceText(CharSourceRange(unit_range, false), sm, result.Context->getLangOpts()).str().c_str(),
+        Dylinx::Instance().lock_i
       );
     } else {
       perror("Runtime error malloc matcher operation fault!\n");
       exit(-1);
     }
+    meta["modification_type"] = MEM_ALLOCA_TYPE;
+    meta["name"] = ptr_name;
     Dylinx::Instance().rw_ptr->ReplaceText(
       SourceRange(stmt_start, stmt_end),
       size_expr
     );
+    save2metas(uid, meta);
   }
 };
 
@@ -388,11 +418,10 @@ public:
       const Token *token = move2n_token(begin_loc, 1, sm, result.Context->getLangOpts());
       FileID src_id = sm.getFileID(begin_loc);
       char format[100];
-      sprintf(format, "general_interface_t *", Dylinx::Instance().lock_i);
       Dylinx::Instance().rw_ptr->ReplaceText(
         token->getLocation(),
         token->getLength(),
-        format
+        "general_interface_t *"
       );
       save2altered_list(src_id, sm);
     }
@@ -663,10 +692,6 @@ public:
         sprintf(format, "DYLINX_LOCK_TYPE_%d", Dylinx::Instance().lock_i);
         if (sm.isAtStartOfImmediateMacroExpansion(type_loc)) {
           Dylinx::Instance().rw_ptr->ReplaceText(
-            // SourceRange(
-            //   d->getTypeSpecStartLoc(),
-            //   d->getTypeSpecEndLoc()
-            // ),
             sm.getImmediateExpansionRange(d->getTypeSpecStartLoc()).getAsRange(),
             format
           );
@@ -847,7 +872,7 @@ public:
     matcher.addMatcher(
       varDecl(
         hasType(asString("pthread_mutex_t *")),
-        anyOf(
+        optionally(anyOf(
           hasInitializer(hasDescendant(
             callExpr(
               callee(functionDecl(hasName("malloc"))),
@@ -866,7 +891,7 @@ public:
               hasArgument(1, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
             )).bind("alloc_call")
           ))
-        )
+        ))
       ).bind("res_decl"),
       &handler_for_malloc
     );
