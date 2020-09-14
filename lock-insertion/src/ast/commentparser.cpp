@@ -530,6 +530,8 @@ public:
       std::vector<std::string> init_str;
       std::vector<std::string> field_seq;
       traverse_init_fields(vd->getType().getTypePtr()->getAsRecordDecl(), init_str, field_seq);
+      if (!init_str.size())
+        return;
       YAML::Node meta;
       meta["name"] = vd->getNameAsString();
       meta["modification_type"] = VAR_FIELD_INIT;
@@ -704,6 +706,7 @@ public:
             format
           );
         }
+        stash_id = Dylinx::Instance().lock_i;
       }
       std::string var_name = d->getNameAsString();
       if (!d->hasDefinition()) {
@@ -737,20 +740,22 @@ public:
       } else if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
 
         char format[100];
-        sprintf(format, "DYLINX_LOCK_INIT_%d", Dylinx::Instance().lock_i);
+        sprintf(format, "DYLINX_LOCK_INIT_%d", stash_id);
         Dylinx::Instance().rw_ptr->ReplaceText(
           sm.getImmediateExpansionRange(init_expr->getBeginLoc()).getAsRange(),
           format
         );
+        meta["define_init"] = true;
 
       } else {
         // User doesn't specify initlist.
         char format[50];
-        sprintf(format, " = DYLINX_LOCK_INIT_%d", Dylinx::Instance().lock_i);
+        sprintf(format, " = DYLINX_LOCK_INIT_%d", stash_id);
         Dylinx::Instance().rw_ptr->InsertTextAfter(
           d->getEndLoc().getLocWithOffset(var_name.length()),
           format
         );
+        meta["define_init"] = true;
       }
 
       meta["name"] = var_name;
@@ -761,7 +766,7 @@ public:
   }
 private:
   EntityID pre_type = {"/", -1, -1};
-  uint32_t lock_cnt;
+  uint32_t stash_id;
 };
 
 class CastMatchHandler: public MatchFinder::MatchCallback {
