@@ -139,50 +139,6 @@ YAML::Node parse_comment(std::string raw_text) {
   return cmb;
 }
 
-class FuncInterfaceMatchHandler: public MatchFinder::MatchCallback {
-public:
-  FuncInterfaceMatchHandler() {}
-  virtual void run(const MatchFinder::MatchResult &result) {
-    if (const CallExpr *e = result.Nodes.getNodeAs<CallExpr>("interfaces")) {
-      SourceManager& sm = result.Context->getSourceManager();
-      SourceLocation begin_loc = e->getBeginLoc();
-      SourceLocation end_loc = e->getEndLoc();
-      if (begin_loc.isMacroID()) {
-        SourceLocation macro_loc = sm.getImmediateMacroCallerLoc(begin_loc);
-        printf(
-          "CallExpr L%5d, col %5d macro is %s, callee is %s\n",
-          sm.getExpansionLineNumber(begin_loc),
-          sm.getExpansionColumnNumber(begin_loc),
-          Lexer::getImmediateMacroName(begin_loc, sm, result.Context->getLangOpts()).str().c_str(),
-          e->getDirectCallee()->getNameInfo().getName().getAsString().c_str()
-        );
-        std::string macro_name = Lexer::getImmediateMacroName(begin_loc, sm, result.Context->getLangOpts()).str();
-        Dylinx::Instance().rw_ptr->ReplaceText(
-          sm.getImmediateMacroCallerLoc(begin_loc), macro_name.length(),
-          interface_LUT[e->getDirectCallee()->getNameInfo().getName().getAsString()]
-        );
-        begin_loc = macro_loc;
-      }
-      else {
-        Dylinx::Instance().rw_ptr->ReplaceText(
-          e->getCallee()->getSourceRange(),
-          interface_LUT[e->getDirectCallee()->getNameInfo().getName().getAsString()]
-        );
-      }
-      FileID src_id = sm.getFileID(begin_loc);
-      save2altered_list(src_id, sm);
-    }
-  }
-private:
-  std::map<std::string, std::string>interface_LUT = {
-    {"pthread_mutex_init", "__dylinx_check_var_"},
-    {"pthread_mutex_lock", "__dylinx_generic_enable_"},
-    {"pthread_mutex_unlock", "__dylinx_generic_disable_"},
-    {"pthread_mutex_destroy", "__dylinx_generic_destroy_"},
-    {"pthread_mutex_trylock", "__dylinx_generic_attempt_"},
-    {"pthread_cond_wait", "__dylinx_generic_condwait_"}
-  };
-};
 
 class MemberInitMatchHandler: public MatchFinder::MatchCallback {
 public:
@@ -229,12 +185,12 @@ public:
       if (sm.isAtStartOfImmediateMacroExpansion(type_start)) {
         Dylinx::Instance().rw_ptr->ReplaceText(
           sm.getImmediateExpansionRange(type_start).getAsRange(),
-          "general_interface_t *"
+          "generic_interface_t *"
         );
       } else {
         Dylinx::Instance().rw_ptr->ReplaceText(
           SourceRange(type_start, type_end),
-          "general_interface_t *"
+          "generic_interface_t *"
         );
       }
 
@@ -421,7 +377,7 @@ public:
       Dylinx::Instance().rw_ptr->ReplaceText(
         token->getLocation(),
         token->getLength(),
-        "general_interface_t *"
+        "generic_interface_t *"
       );
       save2altered_list(src_id, sm);
     }
@@ -453,6 +409,8 @@ public:
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(StructField, fd, sm);
 #endif
+      if (sm.isInSystemHeader(fd->getBeginLoc()))
+        return;
       SourceLocation begin_loc = fd->getBeginLoc();
       FileID src_id = sm.getFileID(begin_loc);
       fs::path src_path = sm.getFileEntryForID( sm.getFileID(begin_loc))->getName().str();
@@ -488,7 +446,7 @@ void traverse_init_fields(const RecordDecl *recr, std::vector<std::string>& init
   for (auto iter = recr->field_begin(); iter != recr->field_end(); iter++) {
     const clang::Type *t = iter->getType().getTypePtr();
     std::string type_name = t->getCanonicalTypeInternal().getAsString();
-    if (t->isRecordType() && type_name != "pthread_mutex_t") {
+    if (t->isStructureType() && type_name != "pthread_mutex_t") {
       field_seq.push_back(iter->getNameAsString());
       traverse_init_fields(t->getAsStructureType()->getDecl(), init_str, field_seq);
     }
@@ -516,9 +474,8 @@ public:
       recr_name = vd->getType().getTypePtr()->getUnqualifiedDesugaredType()->getCanonicalTypeInternal().getAsString();
       if (recr_name == "pthread_mutex_t")
         return;
-#ifdef __DYLINX_DEBUG__
-      DEBUG_LOG(StructDecl, vd, sm);
-#endif
+      if (sm.isInSystemHeader(vd->getBeginLoc()))
+        return;
       SourceLocation begin_loc = vd->getBeginLoc();
       FileID src_id = sm.getFileID(begin_loc);
       fs::path src_path = sm.getFileEntryForID(src_id)->getName().str();
@@ -532,12 +489,14 @@ public:
       traverse_init_fields(vd->getType().getTypePtr()->getAsRecordDecl(), init_str, field_seq);
       if (!init_str.size())
         return;
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(StructDecl, vd, sm);
+#endif
       YAML::Node meta;
       meta["name"] = vd->getNameAsString();
       meta["modification_type"] = VAR_FIELD_INIT;
 
       if (!vd->isStaticLocal() && vd->hasGlobalStorage()) {
-        printf("should print\n");
         Dylinx::Instance().require_init = true;
         meta["extra_init"] = sm.getFileEntryForID(sm.getMainFileID())->getUID();
         Dylinx::Instance().cu_recr[vd->getNameAsString()] = init_str;
@@ -547,7 +506,6 @@ public:
         for (auto it = init_str.begin(); it != init_str.end(); it++) {
           char init_field[200];
           std::string field_name = var_name + *it;
-          printf("%s\n", field_name.c_str());
           sprintf(
             init_field,
             "\t__dylinx_member_init_(&%s, NULL);\n",
@@ -562,6 +520,7 @@ public:
       }
       save2metas(uid, meta);
       save2altered_list(src_id, sm);
+      printf("finish!\n");
     }
     return;
     if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("struct_member_init")) {
@@ -786,7 +745,7 @@ public:
             sm.getSpellingLoc(begin_loc).getLocWithOffset(1),
             sm.getSpellingLoc(end_loc).getLocWithOffset(-1)
           ),
-          "general_interface_t *"
+          "generic_interface_t *"
         );
         begin_loc = sm.getSpellingLoc(begin_loc);
       }
@@ -796,7 +755,7 @@ public:
             cast_expr->getLParenLoc().getLocWithOffset(1),
             cast_expr->getRParenLoc().getLocWithOffset(-1)
           ),
-          "general_interface_t *"
+          "generic_interface_t *"
         );
       }
       FileID src_id = sm.getFileID(begin_loc);
@@ -817,6 +776,35 @@ public:
     Dylinx::Instance().cu_arrs.clear();
     Dylinx::Instance().rw_ptr = new Rewriter;
     Dylinx::Instance().rw_ptr->setSourceMgr(sm, opts);
+
+    for (auto it = sm.fileinfo_begin(); it != sm.fileinfo_end(); it++) {
+      const FileEntry *fentry = it->first;
+      fs::path pth = fentry->getName().str();
+      const FileID file_id = sm.translateFile(fentry);
+      if (pth.filename() == "pthread.h") {
+        SourceLocation header = sm.getIncludeLoc(file_id);
+        uint32_t line = sm.getSpellingLineNumber(header);
+        int32_t col = sm.getSpellingColumnNumber(header);
+        Dylinx::Instance().rw_ptr->InsertTextAfter(
+          header.getLocWithOffset(-1 * col),
+          "\n#ifndef __DYLINX_REPLACE_PTHREAD_NATIVE__\n"
+          "#define __DYLINX_REPLACE_PTHREAD_NATIVE__\n"
+          "#define pthread_mutex_init pthread_mutex_init_original\n"
+          "#define pthread_mutex_lock pthread_mutex_lock_original\n"
+          "#define pthread_mutex_unlock pthread_mutex_unlock_original\n"
+          "#define pthread_mutex_destroy pthread_mutex_destroy_original"
+        );
+        Dylinx::Instance().rw_ptr->InsertText(
+          header.getLocWithOffset(std::string("<pthread.h>").length() + 1),
+          "#undef pthread_mutex_init pthread_mutex_init_original\n"
+          "#undef pthread_mutex_lock pthread_mutex_lock_original\n"
+          "#undef pthread_mutex_unlock pthread_mutex_unlock_original\n"
+          "#undef pthread_mutex_destroy pthread_mutex_destroy_original\n"
+          "#include \"dylinx-glue.h\"\n"
+          "#endif //__DYLINX_REPLACE_PTHREAD_NATIVE__\n"
+        );
+      }
+    }
 
     // Match all
     //
@@ -859,8 +847,8 @@ public:
     //    typedef pthread_mutex_t MyLock
     //    typedef pthread_mutext_t *MyLockPtr
     // and convert them to
-    //    typedef general_interface_t MyLock
-    //    typedef general_interface_t *MyLock
+    //    typedef generic_interface_t MyLock
+    //    typedef generic_interface_t *MyLock
     matcher.addMatcher(
       typedefDecl(
         hasType(asString("pthread_mutex_t *"))
@@ -984,92 +972,6 @@ public:
       &handler_for_initlist
     );
 
-    // Match all typedef declaration and treat them as whole group of
-    // same type of locks.
-    //
-    //    typedef pthread_mutex_t MyLock;
-    //
-    // and convert the matched code into following form.
-    //
-    //    typedef DYLINX_LOCK_TYPE_1 MyLock;
-    //
-    // matcher.addMatcher(
-    //   typedefDecl(hasType(qualType(hasDeclaration(
-    //     recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))
-    //     )))).bind("record_alias"),
-    //   &handler_for_record_alias
-    // );
-
-    // Match all funtion call including
-    // a. pthread_mutex_lock
-    // b. pthread_mutex_unlock
-    // c. pthread_mutex_init
-    // d. pthread_mutex_destroy
-    // and replace them with Dylinx own version. Take
-    // a regular mutex instance lifecycle for instance.
-    //
-    //    void foo() {
-    //      pthred_mutex_t mtx;
-    //      pthread_mutex_init(&mtx, NULL);
-    //      pthread_mtuex_lock(&mtx);
-    //      pthread_mutex_unlock(&mtx);
-    //      pthread_mutex_destroy(&mtx);
-    //    }
-    //
-    // The above code would be converted into following
-    // pattern.
-    //
-    //    void foo() {
-    //      DYLINX_LOCK_TYPE_1 mtx = DYLINX_LOCK_INIT_1;
-    //      __dylinx_check_var_(&mtx, NULL);
-    //      __dylinx_generic_enable(&mtx);
-    //      __dylinx_generic_disable(&mtx);
-    //      __dylinx_generic_destroy(&mtx);
-    //    }
-    //
-    // Things get slight different when dealing with struct
-    // with mutex memeber lifecycle.
-    //
-    //    struct MyStruct { pthread_mutex_t mtx; int x; };
-    //    void foo() {
-    //      struct instance = { PTHREAD_MUTEX_INITIALIZER, 0 }
-    //      pthread_mutex_lock(&instance.mtx);
-    //      pthread_mutex_unlock(&instance.mtx);
-    //      pthread_mutex_destroy(&instance.mtx);
-    //    }
-    //
-    // The modified version looks like following.
-    //
-    //   struct MyStruct { pthread_mutex_t mtx; int x; };
-    //   void foo() {
-    //     struct instance = { DYLINX_LOCK_INIT_1, 0 };
-    //     __dylinx_member_init_(&instance.mtx);
-    //     __dylinx_generic_enable(&instance.mtx);
-    //     __dylinx_generic_disable(&instance.mtx);
-    //     __dylinx_generic_destroy(&instance.mtx);
-    //   }
-    matcher.addMatcher(
-      callExpr(eachOf(
-        callee(functionDecl(hasName("pthread_mutex_lock"))),
-        callee(functionDecl(hasName("pthread_mutex_unlock"))),
-        allOf(
-          callee(functionDecl(hasName("pthread_mutex_init"))),
-          hasArgument(0, hasDescendant(declRefExpr(
-            hasType(qualType(
-              anyOf(
-                asString("pthread_mutex_t"),
-                hasDeclaration(typedefDecl(hasType(asString("pthread_mutex_t"))))
-              )
-            ))
-          )))
-        ),
-        callee(functionDecl(hasName("pthread_mutex_destroy"))),
-        callee(functionDecl(hasName("pthread_mutex_trylock"))),
-        callee(functionDecl(hasName("pthread_cond_wait")))
-      )).bind("interfaces"),
-      &handler_for_interface
-    );
-
     matcher.addMatcher(
       callExpr(
         callee(functionDecl(hasName("pthread_mutex_init"))),
@@ -1109,7 +1011,6 @@ public:
   }
 private:
   MatchFinder matcher;
-  FuncInterfaceMatchHandler handler_for_interface;
   VarsMatchHandler handler_for_vars;
   MallocMatchHandler handler_for_malloc;
   ArrayMatchHandler handler_for_array;
@@ -1201,7 +1102,6 @@ public:
     }
     std::set<FileID>::iterator iter;
     for (iter = Dylinx::Instance().cu_deps.begin(); iter != Dylinx::Instance().cu_deps.end(); iter++) {
-      Dylinx::Instance().rw_ptr->InsertText(sm.getLocForStartOfFile(*iter), "#include \"dylinx-glue.h\"\n");
       std::string filename = sm.getFileEntryForID(*iter)->getName().str();
       write_modified_file(filename, *iter, sm);
       Dylinx::Instance().altered_files.insert(filename);
