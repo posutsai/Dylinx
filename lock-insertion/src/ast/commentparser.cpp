@@ -98,10 +98,34 @@ const Token *move2n_token(SourceLocation loc, uint32_t n, SourceManager& sm, con
   return token;
 }
 
+void traverse_init_fields(const RecordDecl *recr, std::vector<std::string>& init_str, std::vector<std::string>& field_seq) {
+  for (auto iter = recr->field_begin(); iter != recr->field_end(); iter++) {
+    const clang::Type *t = iter->getType().getTypePtr();
+    std::string type_name = t->getCanonicalTypeInternal().getAsString();
+    if (t->isStructureType() && type_name != "pthread_mutex_t") {
+      field_seq.push_back(iter->getNameAsString());
+      traverse_init_fields(t->getAsStructureType()->getDecl(), init_str, field_seq);
+    }
+    else if (type_name == "pthread_mutex_t") {
+      std::string prefix = "";
+      for (auto el = field_seq.begin(); el != field_seq.end(); el++)
+        prefix = prefix + std::string(".") + *el;
+      init_str.push_back(prefix + std::string(".") + iter->getNameAsString());
+    } else {
+      continue;
+    }
+  }
+  if (field_seq.size())
+    field_seq.pop_back();
+}
+
 void write_modified_file(fs::path file_path, FileID fid, SourceManager& sm) {
   std::error_code err;
-  raw_fd_ostream fstream((Dylinx::Instance().temp_dir / file_path.filename()).string(), err);
-  Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
+  fs::path temp_file = Dylinx::Instance().temp_dir / file_path.filename();
+  if (!fs::exists(temp_file)) {
+    raw_fd_ostream fstream(temp_file.string(), err);
+    Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
+  }
 }
 
 // Chances are saving is failed since the uid may already exist.
@@ -164,22 +188,115 @@ class MallocMatchHandler: public MatchFinder::MatchCallback {
 public:
   MallocMatchHandler() {}
   virtual void run(const MatchFinder::MatchResult &result) {
-    const CallExpr *call_expr;
     SourceManager& sm = result.Context->getSourceManager();
-    std::string ptr_name;
-    SourceLocation stmt_start;
-    SourceLocation stmt_end;
-    bool assign_after_decl = false;
-    FileID src_id;
-    if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("res_decl")) {
-      if (sm.isInSystemHeader(vd->getBeginLoc()))
-        return;
-      assign_after_decl = true;
-      ptr_name = vd->getNameAsString();
-      stmt_start = vd->getTypeSpecEndLoc().getLocWithOffset(ptr_name.length() + 1);
-      call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call");
-      if (call_expr)
-        stmt_end = call_expr->getEndLoc().getLocWithOffset(1);
+    const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("res_decl");
+    std::string ptr_name = vd->getNameAsString();
+    if (const UnaryExprOrTypeTraitExpr *sizeof_expr = result.Nodes.getNodeAs<UnaryExprOrTypeTraitExpr>("sizeofExpr")) {
+      QualType arg_type = sizeof_expr->getTypeOfArgument();
+      std::vector<std::string> init_str;
+      std::vector<std::string> field_seq;
+      if (arg_type.getAsString() == "pthread_mutex_t") {
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          SourceRange(
+            sizeof_expr->getRParenLoc().getLocWithOffset(
+              -1 * arg_type.getAsString().length()
+            ),
+            sizeof_expr->getRParenLoc().getLocWithOffset(-1)
+          ),
+          "generic_interface_t"
+        );
+      } else {
+        printf("start to iterate\n");
+        traverse_init_fields(
+          arg_type->getUnqualifiedDesugaredType()->getAsRecordDecl(),
+          init_str, field_seq
+        );
+        if (!init_str.size())
+          return;
+      }
+      char size_expr[300];
+      const CallExpr *call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call");
+      if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("malloc")) {
+        const Expr *arg_expr = call_expr->getArg(0);
+        SourceLocation arg_begin = arg_expr->getBeginLoc();
+        SourceLocation arg_end = arg_expr->getEndLoc().getLocWithOffset(1);
+        SourceRange range(arg_begin, arg_end);
+        sprintf(
+          size_expr, "(%s) / sizeof(%s)",
+          Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str(),
+          arg_type.getAsString().c_str()
+        );
+      } else if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("calloc")) {
+        const Expr *arg0_expr = call_expr->getArg(0);
+        const Expr *arg1_expr = call_expr->getArg(1);
+        size_t arg0_len = Lexer::getSourceText(
+          CharSourceRange(
+            SourceRange(arg0_expr->getBeginLoc(), arg1_expr->getBeginLoc()),
+            false
+          ),
+          sm, result.Context->getLangOpts()
+        ).str().find_last_of(",");
+        SourceRange cnt_range(
+          arg0_expr->getBeginLoc(),
+          arg0_expr->getEndLoc().getLocWithOffset(arg0_len)
+        );
+        SourceRange unit_range(
+          arg1_expr->getBeginLoc(),
+          arg1_expr->getEndLoc().getLocWithOffset(1)
+        );
+        sprintf(
+          size_expr, "((%s) * (%s)) / sizeof(%s)",
+          Lexer::getSourceText(CharSourceRange(cnt_range, false), sm, result.Context->getLangOpts()).str().c_str(),
+          Lexer::getSourceText(CharSourceRange(unit_range, false), sm, result.Context->getLangOpts()).str().c_str(),
+          arg_type.getAsString().c_str()
+        );
+      }
+      printf("size_expr is %s\n", size_expr);
+      char init_expr[300];
+      if (arg_type.getAsString() == "pthread_mutex_t") {
+        sprintf(
+          init_expr,
+          "\n__dylinx_ptr_unit_init_(%s, %s, DYLINX_LOCK_TYPE_%d);",
+          ptr_name.c_str(),
+          size_expr,
+          Dylinx::Instance().lock_i
+        );
+        Dylinx::Instance().rw_ptr->InsertText(
+          call_expr->getEndLoc().getLocWithOffset(2),
+          init_expr
+        );
+      } else {
+        char loop_head[300];
+        sprintf(
+          loop_head,
+          "\nfor (int i = 0; i < %s; i++) {",
+          size_expr
+        );
+        Dylinx::Instance().rw_ptr->InsertText(
+          call_expr->getEndLoc().getLocWithOffset(2),
+          loop_head
+        );
+        for (auto it = init_str.begin(); it != init_str.end(); it++) {
+          sprintf(
+            init_expr,
+            "\n\t__dylinx_member_init_(%s[i]%s, NULL);",
+            ptr_name.c_str(),
+            it->c_str()
+          );
+          Dylinx::Instance().rw_ptr->InsertText(
+            call_expr->getEndLoc().getLocWithOffset(2),
+            init_expr
+          );
+        }
+        Dylinx::Instance().rw_ptr->InsertText(
+          call_expr->getEndLoc().getLocWithOffset(2),
+          "\n}"
+        );
+      }
+    }
+
+    // Decouple type replacement
+    if (vd && vd->getType().getAsString() == "pthread_mutex_t *") {
       SourceLocation type_start = vd->getTypeSpecStartLoc();
       SourceLocation type_end = vd->getTypeSpecEndLoc();
       if (sm.isAtStartOfImmediateMacroExpansion(type_start)) {
@@ -193,82 +310,8 @@ public:
           "generic_interface_t *"
         );
       }
-
-    } else if (const BinaryOperator *binop = result.Nodes.getNodeAs<BinaryOperator>("res_assign")) {
-      DeclRefExpr *drefexpr = dyn_cast<DeclRefExpr>(binop->getLHS());
-      ptr_name = drefexpr->getNameInfo().getAsString();
-      call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call");
-      stmt_start = drefexpr->getBeginLoc();
-      stmt_end = call_expr->getEndLoc();
-      Expr *lhs = binop->getLHS();
-    } else {
-      perror("Runtime error malloc matcher operation fault!\n");
-      exit(-1);
     }
-    src_id = sm.getFileID(stmt_start);
-    save2altered_list(src_id, sm);
-
-    if(!call_expr) {
-      return;
-    }
-#ifdef __DYLINX_DEBUG__
-      DEBUG_LOG(PtrDecl, call_expr, sm);
-#endif
-    YAML::Node meta;
-    EntityID uid = std::make_tuple(
-      sm.getFileEntryForID(src_id)->getName().str(),
-      sm.getSpellingLineNumber(stmt_start),
-      sm.getSpellingColumnNumber(stmt_start)
-    );
-    char size_expr[300];
-    if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("malloc")) {
-      const Expr *arg_expr = call_expr->getArg(0);
-      SourceLocation arg_begin = arg_expr->getBeginLoc();
-      SourceLocation arg_end = arg_expr->getEndLoc().getLocWithOffset(1);
-      SourceRange range(arg_begin, arg_end);
-      sprintf(
-        size_expr, "%s __dylinx_ptr_unit_init_(%s, (%s) / sizeof(pthread_mutex_t), DYLINX_LOCK_TYPE_%d);",
-        assign_after_decl? ";": "",
-        ptr_name.c_str(),
-        Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str(),
-        Dylinx::Instance().lock_i
-      );
-    } else if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("calloc")) {
-      const Expr *arg0_expr = call_expr->getArg(0);
-      const Expr *arg1_expr = call_expr->getArg(1);
-      size_t arg0_len = Lexer::getSourceText(
-        CharSourceRange(
-          SourceRange(arg0_expr->getBeginLoc(), arg1_expr->getBeginLoc()),
-          false
-        ),
-        sm, result.Context->getLangOpts()
-      ).str().find_last_of(",");
-      SourceRange cnt_range(
-        arg0_expr->getBeginLoc(),
-        arg0_expr->getEndLoc().getLocWithOffset(arg0_len)
-      );
-      SourceRange unit_range(
-        arg1_expr->getBeginLoc(),
-        arg1_expr->getEndLoc().getLocWithOffset(1)
-      );
-      sprintf(
-        size_expr, "__dylinx_ptr_unit_init_(%s, ((%s) * (%s)) / sizeof(pthread_mutex_t), DYLINX_LOCK_TYPE_%d);",
-        ptr_name.c_str(),
-        Lexer::getSourceText(CharSourceRange(cnt_range, false), sm, result.Context->getLangOpts()).str().c_str(),
-        Lexer::getSourceText(CharSourceRange(unit_range, false), sm, result.Context->getLangOpts()).str().c_str(),
-        Dylinx::Instance().lock_i
-      );
-    } else {
-      perror("Runtime error malloc matcher operation fault!\n");
-      exit(-1);
-    }
-    meta["modification_type"] = MEM_ALLOCA_TYPE;
-    meta["name"] = ptr_name;
-    Dylinx::Instance().rw_ptr->ReplaceText(
-      SourceRange(stmt_start, stmt_end),
-      size_expr
-    );
-    save2metas(uid, meta);
+    return;
   }
 };
 
@@ -442,26 +485,6 @@ public:
   }
 };
 
-void traverse_init_fields(const RecordDecl *recr, std::vector<std::string>& init_str, std::vector<std::string>& field_seq) {
-  for (auto iter = recr->field_begin(); iter != recr->field_end(); iter++) {
-    const clang::Type *t = iter->getType().getTypePtr();
-    std::string type_name = t->getCanonicalTypeInternal().getAsString();
-    if (t->isStructureType() && type_name != "pthread_mutex_t") {
-      field_seq.push_back(iter->getNameAsString());
-      traverse_init_fields(t->getAsStructureType()->getDecl(), init_str, field_seq);
-    }
-    else if (type_name == "pthread_mutex_t") {
-      std::string prefix = "";
-      for (auto el = field_seq.begin(); el != field_seq.end(); el++)
-        prefix = prefix + std::string(".") + *el;
-      init_str.push_back(prefix + std::string(".") + iter->getNameAsString());
-    } else {
-      continue;
-    }
-  }
-  if (field_seq.size())
-    field_seq.pop_back();
-}
 
 //! TODO
 //  Refine struct variable to init immediately.
@@ -792,14 +815,20 @@ public:
           "#define pthread_mutex_init pthread_mutex_init_original\n"
           "#define pthread_mutex_lock pthread_mutex_lock_original\n"
           "#define pthread_mutex_unlock pthread_mutex_unlock_original\n"
-          "#define pthread_mutex_destroy pthread_mutex_destroy_original"
+          "#define pthread_mutex_destroy pthread_mutex_destroy_original\n"
+          "#define pthread_mutex_trylock pthread_mutex_destroy_original\n"
+          "#define pthread_cond_wait pthread_cond_wait_original\n"
+          "#define pthread_cond_timedwait pthread_mutex_destroy_original"
         );
         Dylinx::Instance().rw_ptr->InsertText(
           header.getLocWithOffset(std::string("<pthread.h>").length() + 1),
-          "#undef pthread_mutex_init pthread_mutex_init_original\n"
-          "#undef pthread_mutex_lock pthread_mutex_lock_original\n"
-          "#undef pthread_mutex_unlock pthread_mutex_unlock_original\n"
-          "#undef pthread_mutex_destroy pthread_mutex_destroy_original\n"
+          "#undef pthread_mutex_init\n"
+          "#undef pthread_mutex_lock\n"
+          "#undef pthread_mutex_unlock\n"
+          "#undef pthread_mutex_destroy\n"
+          "#undef pthread_mutex_trylock\n"
+          "#undef pthread_cond_wait\n"
+          "#undef pthread_cond_timedwait"
           "#include \"dylinx-glue.h\"\n"
           "#endif //__DYLINX_REPLACE_PTHREAD_NATIVE__\n"
         );
@@ -864,25 +893,32 @@ public:
     //    __dylinx_ptr_init(malloc(sizeof(pthread_mutex_t)));
     matcher.addMatcher(
       varDecl(
-        hasType(asString("pthread_mutex_t *")),
+        anyOf(
+          hasType(asString("pthread_mutex_t *")),
+          hasType(pointerType(pointee(hasUnqualifiedDesugaredType(recordType()))))
+        ),
         optionally(anyOf(
           hasInitializer(hasDescendant(
             callExpr(
               callee(functionDecl(hasName("malloc"))),
-              hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
-            )).bind("alloc_call")
+              anyOf(
+                hasArgument(0, traverse(ast_type_traits::TK_AsIs, unaryExprOrTypeTraitExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t")))).bind("sizeofExpr"))),
+                hasArgument(0, traverse(ast_type_traits::TK_AsIs, unaryExprOrTypeTraitExpr(hasArgumentOfType(
+                  hasUnqualifiedDesugaredType(recordType(hasDeclaration(recordDecl(has(fieldDecl())))))
+                )).bind("sizeofExpr")))
+              )
+            ).bind("alloc_call")
           )),
           hasInitializer(hasDescendant(
             callExpr(
               callee(functionDecl(hasName("calloc"))),
-              hasArgument(1, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
-            )).bind("alloc_call")
-          )),
-          hasInitializer(hasDescendant(
-            callExpr(
-              callee(functionDecl(hasName("calloc"))),
-              hasArgument(1, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
-            )).bind("alloc_call")
+              anyOf(
+                hasArgument(1, hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t")))).bind("sizeofExpr"))),
+                hasArgument(1, hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(
+                  hasUnqualifiedDesugaredType(recordType(hasDeclaration(recordDecl(has(fieldDecl())))))
+                )).bind("sizeofExpr")))
+              )
+            ).bind("alloc_call")
           ))
         ))
       ).bind("res_decl"),
@@ -894,20 +930,28 @@ public:
         hasOperatorName("="),
         anyOf(
           hasRHS(hasDescendant(
-           callExpr(callee(
-            functionDecl(hasName("malloc"))),
-            hasArgument(0, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
-          )).bind("alloc_call"))),
+           callExpr(
+            callee(functionDecl(hasName("malloc"))),
+            hasArgument(0,
+              anyOf(
+                hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t")))).bind("sizeofExpr")),
+                hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(
+                  hasUnqualifiedDesugaredType(recordType(hasDeclaration(recordDecl(has(fieldDecl())))))
+                )).bind("sizeofExpr"))
+              )
+            )
+          ).bind("alloc_call"))),
           hasRHS(hasDescendant(
-           callExpr(callee(
-            functionDecl(hasName("calloc"))),
-            hasArgument(1, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
-          )).bind("alloc_call"))),
-          hasRHS(hasDescendant(
-           callExpr(callee(
-            functionDecl(hasName("realloc"))),
-            hasArgument(1, sizeOfExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t"))))
-          )).bind("alloc_call")))
+            callExpr(callee( functionDecl(hasName("calloc"))),
+            hasArgument(1,
+              anyOf(
+                hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t")))).bind("sizeofExpr")),
+                hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(
+                  hasUnqualifiedDesugaredType(recordType(hasDeclaration(recordDecl(has(fieldDecl())))))
+                )).bind("sizeofExpr"))
+              )
+            )
+          ).bind("alloc_call")))
         )
       ).bind("res_assign"),
       &handler_for_malloc
@@ -1134,6 +1178,9 @@ std::unique_ptr<FrontendActionFactory> newSlotIdentificationActionFactory(
   factory->setCompileDB(compiler_db);
   return factory;
 }
+
+// TODO
+// Not yet implement array of struct and struct of array
 
 int main(int argc, const char **argv) {
   std::string err;
