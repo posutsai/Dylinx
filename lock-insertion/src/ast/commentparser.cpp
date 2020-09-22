@@ -40,7 +40,8 @@
 #define VAR_FIELD_INIT "VAR_FIELD_INIT"
 #define FIELD_INSERT "FIELD_INSERT"
 #define TYPEDEF_ALLOCA_TYPE "TYPEDEF"
-#define MEM_ALLOCA_TYPE "MEM_ALLOCATION"
+#define MUTEX_MEM_ALLOCATION "MUTEX_MEM_ALLOCATION"
+#define STRUCT_MEM_ALLOCATION "STRUCT_MEM_ALLOCATION"
 #define DEBUG_LOG(pattern, ins, sm)  \
   do {                      \
     SourceLocation matched_loc = ins->getBeginLoc();  \
@@ -190,9 +191,60 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     SourceManager& sm = result.Context->getSourceManager();
     const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("res_decl");
-    std::string ptr_name = vd->getNameAsString();
+    const BinaryOperator *bin_op = result.Nodes.getNodeAs<BinaryOperator>("res_assign");
+    QualType arg_type;
+    std::string ref_name;
+    SourceLocation begin_loc;
+    YAML::Node meta;
+    if (vd) {
+      arg_type = vd->getType().getTypePtr()->getPointeeType();
+      ref_name = vd->getNameAsString();
+      begin_loc = vd->getBeginLoc();
+    } else if (bin_op) {
+      const Expr *lhs = bin_op->getLHS();
+      begin_loc = lhs->getBeginLoc();
+      arg_type = lhs->getType().getTypePtr()->getPointeeType();
+      ref_name = Lexer::getSourceText(
+        CharSourceRange(SourceRange(
+          lhs->getBeginLoc(),
+          bin_op->getOperatorLoc()
+        ), false),
+        sm,
+        result.Context->getLangOpts()
+      ).str();
+    }
+    meta["name"] = ref_name;
+    meta["pointee_type"] = arg_type.getAsString();
+    FileID src_id = sm.getFileID(sm.getSpellingLoc(begin_loc));
+    if (sm.isInSystemHeader(begin_loc) || src_id.isInvalid())
+      return;
+    fs::path src_path = sm.getFileEntryForID(src_id)->getName().str();
+    EntityID uid = std::make_tuple(
+      src_path,
+      sm.getSpellingLineNumber(begin_loc),
+      sm.getSpellingColumnNumber(begin_loc)
+    );
+
+    // Decouple type replacement
+    if (vd && vd->getType().getAsString() == "pthread_mutex_t *") {
+      SourceLocation type_start = vd->getTypeSpecStartLoc();
+      SourceLocation type_end = vd->getTypeSpecEndLoc();
+      if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(vd))
+        meta["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
+      if (sm.isAtStartOfImmediateMacroExpansion(type_start)) {
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          sm.getImmediateExpansionRange(type_start).getAsRange(),
+          "generic_interface_t *"
+        );
+      } else {
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          SourceRange(type_start, type_end),
+          "generic_interface_t *"
+        );
+      }
+    }
+
     if (const UnaryExprOrTypeTraitExpr *sizeof_expr = result.Nodes.getNodeAs<UnaryExprOrTypeTraitExpr>("sizeofExpr")) {
-      QualType arg_type = sizeof_expr->getTypeOfArgument();
       std::vector<std::string> init_str;
       std::vector<std::string> field_seq;
       if (arg_type.getAsString() == "pthread_mutex_t") {
@@ -205,14 +257,15 @@ public:
           ),
           "generic_interface_t"
         );
+        meta["modification_type"] = MUTEX_MEM_ALLOCATION;
       } else {
-        printf("start to iterate\n");
         traverse_init_fields(
           arg_type->getUnqualifiedDesugaredType()->getAsRecordDecl(),
           init_str, field_seq
         );
         if (!init_str.size())
           return;
+        meta["modification_type"] = STRUCT_MEM_ALLOCATION;
       }
       char size_expr[300];
       const CallExpr *call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call");
@@ -251,13 +304,12 @@ public:
           arg_type.getAsString().c_str()
         );
       }
-      printf("size_expr is %s\n", size_expr);
       char init_expr[300];
       if (arg_type.getAsString() == "pthread_mutex_t") {
         sprintf(
           init_expr,
-          "\n__dylinx_ptr_unit_init_(%s, %s, DYLINX_LOCK_TYPE_%d);",
-          ptr_name.c_str(),
+          "\n__dylinx_ptr_unit_init_((%s), %s, DYLINX_LOCK_TYPE_%d);",
+          ref_name.c_str(),
           size_expr,
           Dylinx::Instance().lock_i
         );
@@ -279,8 +331,8 @@ public:
         for (auto it = init_str.begin(); it != init_str.end(); it++) {
           sprintf(
             init_expr,
-            "\n\t__dylinx_member_init_(%s[i]%s, NULL);",
-            ptr_name.c_str(),
+            "\n\t__dylinx_member_init_(&(%s)[i]%s, NULL);",
+            ref_name.c_str(),
             it->c_str()
           );
           Dylinx::Instance().rw_ptr->InsertText(
@@ -293,25 +345,9 @@ public:
           "\n}"
         );
       }
+      save2metas(uid, meta);
+      save2altered_list(src_id, sm);
     }
-
-    // Decouple type replacement
-    if (vd && vd->getType().getAsString() == "pthread_mutex_t *") {
-      SourceLocation type_start = vd->getTypeSpecStartLoc();
-      SourceLocation type_end = vd->getTypeSpecEndLoc();
-      if (sm.isAtStartOfImmediateMacroExpansion(type_start)) {
-        Dylinx::Instance().rw_ptr->ReplaceText(
-          sm.getImmediateExpansionRange(type_start).getAsRange(),
-          "generic_interface_t *"
-        );
-      } else {
-        Dylinx::Instance().rw_ptr->ReplaceText(
-          SourceRange(type_start, type_end),
-          "generic_interface_t *"
-        );
-      }
-    }
-    return;
   }
 };
 
@@ -543,19 +579,13 @@ public:
       }
       save2metas(uid, meta);
       save2altered_list(src_id, sm);
-      printf("finish!\n");
     }
     return;
     if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("struct_member_init")) {
       SourceManager& sm = result.Context->getSourceManager();
-      if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("struct_instance")) {
-        counter = 0;
-        recr_name = vd->getType().getTypePtr()->getUnqualifiedDesugaredType()->getCanonicalTypeInternal().getAsString();
-        recr_name = std::regex_replace(recr_name, std::regex("^(struct *)"), "");
-      }
       SourceLocation begin_loc = init_expr->getLBraceLoc();
       char format[100];
-      sprintf(format, "DYLINX_%s_MEMBER_INIT_%d", recr_name.c_str(), counter);
+      sprintf(format, "DYLINXR_DUMMY_INIT");
       Dylinx::Instance().rw_ptr->ReplaceText(
         sm.getImmediateExpansionRange(begin_loc).getAsRange(),
         format
@@ -902,10 +932,10 @@ public:
             callExpr(
               callee(functionDecl(hasName("malloc"))),
               anyOf(
-                hasArgument(0, traverse(ast_type_traits::TK_AsIs, unaryExprOrTypeTraitExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t")))).bind("sizeofExpr"))),
-                hasArgument(0, traverse(ast_type_traits::TK_AsIs, unaryExprOrTypeTraitExpr(hasArgumentOfType(
+                hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t")))).bind("sizeofExpr")),
+                hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(
                   hasUnqualifiedDesugaredType(recordType(hasDeclaration(recordDecl(has(fieldDecl())))))
-                )).bind("sizeofExpr")))
+                )).bind("sizeofExpr"))
               )
             ).bind("alloc_call")
           )),
@@ -913,10 +943,10 @@ public:
             callExpr(
               callee(functionDecl(hasName("calloc"))),
               anyOf(
-                hasArgument(1, hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t")))).bind("sizeofExpr"))),
-                hasArgument(1, hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(
+                hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t")))).bind("sizeofExpr")),
+                hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(
                   hasUnqualifiedDesugaredType(recordType(hasDeclaration(recordDecl(has(fieldDecl())))))
-                )).bind("sizeofExpr")))
+                )).bind("sizeofExpr"))
               )
             ).bind("alloc_call")
           ))
@@ -932,24 +962,20 @@ public:
           hasRHS(hasDescendant(
            callExpr(
             callee(functionDecl(hasName("malloc"))),
-            hasArgument(0,
-              anyOf(
-                hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t")))).bind("sizeofExpr")),
-                hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(
-                  hasUnqualifiedDesugaredType(recordType(hasDeclaration(recordDecl(has(fieldDecl())))))
-                )).bind("sizeofExpr"))
-              )
+            anyOf(
+              hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t")))).bind("sizeofExpr")),
+              hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(
+                hasUnqualifiedDesugaredType(recordType(hasDeclaration(recordDecl(has(fieldDecl())))))
+              )).bind("sizeofExpr"))
             )
           ).bind("alloc_call"))),
           hasRHS(hasDescendant(
             callExpr(callee( functionDecl(hasName("calloc"))),
-            hasArgument(1,
-              anyOf(
-                hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t")))).bind("sizeofExpr")),
-                hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(
-                  hasUnqualifiedDesugaredType(recordType(hasDeclaration(recordDecl(has(fieldDecl())))))
-                )).bind("sizeofExpr"))
-              )
+            anyOf(
+              hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(qualType(asString("pthread_mutex_t")))).bind("sizeofExpr")),
+              hasDescendant(unaryExprOrTypeTraitExpr(hasArgumentOfType(
+                hasUnqualifiedDesugaredType(recordType(hasDeclaration(recordDecl(has(fieldDecl())))))
+              )).bind("sizeofExpr"))
             )
           ).bind("alloc_call")))
         )
