@@ -291,7 +291,7 @@ public:
         ).str().find_last_of(",");
         SourceRange cnt_range(
           arg0_expr->getBeginLoc(),
-          arg0_expr->getEndLoc().getLocWithOffset(arg0_len)
+          arg0_expr->getBeginLoc().getLocWithOffset(arg0_len)
         );
         SourceRange unit_range(
           arg1_expr->getBeginLoc(),
