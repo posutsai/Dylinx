@@ -1,5 +1,6 @@
 #include "clang/Lex/Lexer.h"
 #include "clang/AST/ASTConsumer.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Type.h"
 #include "clang/AST/Expr.h"
@@ -99,13 +100,34 @@ const Token *move2n_token(SourceLocation loc, uint32_t n, SourceManager& sm, con
   return token;
 }
 
-void traverse_init_fields(const RecordDecl *recr, std::vector<std::string>& init_str, std::vector<std::string>& field_seq) {
+void traverse_init_fields_with_offset(const RecordDecl *recr, std::vector<uint64_t>& init_offsets, uint64_t cur_offset, ASTContext& ctx) {
+  const ASTRecordLayout& layout = ctx.getASTRecordLayout(recr);
+  for (auto iter = recr->field_begin(); iter != recr->field_end(); iter++) {
+    const clang::Type *t = iter->getType().getTypePtr();
+    std::string type_name = t->getCanonicalTypeInternal().getAsString();
+    if (t->isStructureType() && type_name != "pthread_mutex_t") {
+      traverse_init_fields_with_offset(
+        t->getAsStructureType()->getDecl(),
+        init_offsets,
+        cur_offset + layout.getFieldOffset(iter->getFieldIndex()),
+        ctx
+      );
+    }
+    else if (type_name == "pthread_mutex_t") {
+      init_offsets.push_back(cur_offset + layout.getFieldOffset(iter->getFieldIndex()));
+    } else {
+      continue;
+    }
+  }
+}
+
+void traverse_init_fields_with_name(const RecordDecl *recr, std::vector<std::string>& init_str, std::vector<std::string>& field_seq) {
   for (auto iter = recr->field_begin(); iter != recr->field_end(); iter++) {
     const clang::Type *t = iter->getType().getTypePtr();
     std::string type_name = t->getCanonicalTypeInternal().getAsString();
     if (t->isStructureType() && type_name != "pthread_mutex_t") {
       field_seq.push_back(iter->getNameAsString());
-      traverse_init_fields(t->getAsStructureType()->getDecl(), init_str, field_seq);
+      traverse_init_fields_with_name(t->getAsStructureType()->getDecl(), init_str, field_seq);
     }
     else if (type_name == "pthread_mutex_t") {
       std::string prefix = "";
@@ -245,8 +267,7 @@ public:
     }
 
     if (const UnaryExprOrTypeTraitExpr *sizeof_expr = result.Nodes.getNodeAs<UnaryExprOrTypeTraitExpr>("sizeofExpr")) {
-      std::vector<std::string> init_str;
-      std::vector<std::string> field_seq;
+      std::vector<uint64_t> init_offsets;
       if (arg_type.getAsString() == "pthread_mutex_t") {
         Dylinx::Instance().rw_ptr->ReplaceText(
           SourceRange(
@@ -259,94 +280,84 @@ public:
         );
         meta["modification_type"] = MUTEX_MEM_ALLOCATION;
       } else {
-        traverse_init_fields(
+        uint64_t cur_offset = 0; // offset unit is bit instead of byte.
+        traverse_init_fields_with_offset(
           arg_type->getUnqualifiedDesugaredType()->getAsRecordDecl(),
-          init_str, field_seq
+          init_offsets, cur_offset, *result.Context
         );
-        if (!init_str.size())
+        if (!init_offsets.size())
           return;
         meta["modification_type"] = STRUCT_MEM_ALLOCATION;
       }
-      char size_expr[300];
-      const CallExpr *call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call");
-      if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("malloc")) {
-        const Expr *arg_expr = call_expr->getArg(0);
-        SourceLocation arg_begin = arg_expr->getBeginLoc();
-        SourceLocation arg_end = arg_expr->getEndLoc().getLocWithOffset(1);
-        SourceRange range(arg_begin, arg_end);
-        sprintf(
-          size_expr, "(%s) / sizeof(%s)",
-          Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str(),
-          arg_type.getAsString().c_str()
-        );
-      } else if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("calloc")) {
-        const Expr *arg0_expr = call_expr->getArg(0);
-        const Expr *arg1_expr = call_expr->getArg(1);
-        size_t arg0_len = Lexer::getSourceText(
-          CharSourceRange(
-            SourceRange(arg0_expr->getBeginLoc(), arg1_expr->getBeginLoc()),
-            false
-          ),
-          sm, result.Context->getLangOpts()
-        ).str().find_last_of(",");
-        SourceRange cnt_range(
-          arg0_expr->getBeginLoc(),
-          arg0_expr->getBeginLoc().getLocWithOffset(arg0_len)
-        );
-        SourceRange unit_range(
-          arg1_expr->getBeginLoc(),
-          arg1_expr->getEndLoc().getLocWithOffset(1)
-        );
-        sprintf(
-          size_expr, "((%s) * (%s)) / sizeof(%s)",
-          Lexer::getSourceText(CharSourceRange(cnt_range, false), sm, result.Context->getLangOpts()).str().c_str(),
-          Lexer::getSourceText(CharSourceRange(unit_range, false), sm, result.Context->getLangOpts()).str().c_str(),
-          arg_type.getAsString().c_str()
-        );
-      }
-      char init_expr[300];
-      if (arg_type.getAsString() == "pthread_mutex_t") {
-        sprintf(
-          init_expr,
-          "\n__dylinx_ptr_unit_init_((%s), %s, DYLINX_LOCK_TYPE_%d);",
-          ref_name.c_str(),
-          size_expr,
-          Dylinx::Instance().lock_i
-        );
-        Dylinx::Instance().rw_ptr->InsertText(
-          call_expr->getEndLoc().getLocWithOffset(2),
-          init_expr
-        );
-      } else {
-        char loop_head[300];
-        sprintf(
-          loop_head,
-          "\nfor (int i = 0; i < %s; i++) {",
-          size_expr
-        );
-        Dylinx::Instance().rw_ptr->InsertText(
-          call_expr->getEndLoc().getLocWithOffset(2),
-          loop_head
-        );
-        for (auto it = init_str.begin(); it != init_str.end(); it++) {
+
+      if (const CallExpr *call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call")) {
+        // Deal with compound literal (3rd argument)
+        std::string comp_liter = "(int []) {";
+        for (auto it = init_offsets.begin(); it != init_offsets.end(); it++) {
+          char format[50];
+          sprintf(format, " %lu%s", (*it) / 8, it == init_offsets.end() - 1? " ": ",");
+          comp_liter = comp_liter + std::string(format);
+        }
+        comp_liter = comp_liter + std::string("}");
+
+        // Deal with first two arguments
+        char bites_args[300];
+        if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("malloc")) {
+          const Expr *arg_expr = call_expr->getArg(0);
+          SourceLocation arg_begin = arg_expr->getBeginLoc();
+          SourceLocation arg_end = arg_expr->getEndLoc().getLocWithOffset(1);
+          SourceRange range(arg_begin, arg_end);
           sprintf(
-            init_expr,
-            "\n\t__dylinx_member_init_(&(%s)[i]%s, NULL);",
-            ref_name.c_str(),
-            it->c_str()
+            bites_args, "(%s) / sizeof(%s), sizeof(%s)",
+            Lexer::getSourceText(CharSourceRange(range, false), sm, result.Context->getLangOpts()).str().c_str(),
+            arg_type.getAsString().c_str(),
+            arg_type.getAsString().c_str()
           );
-          Dylinx::Instance().rw_ptr->InsertText(
-            call_expr->getEndLoc().getLocWithOffset(2),
-            init_expr
+        } else if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("calloc")) {
+          const Expr *arg0_expr = call_expr->getArg(0);
+          const Expr *arg1_expr = call_expr->getArg(1);
+          size_t arg0_len = Lexer::getSourceText(
+            CharSourceRange(
+              SourceRange(arg0_expr->getBeginLoc(), arg1_expr->getBeginLoc()),
+              false
+            ),
+            sm, result.Context->getLangOpts()
+          ).str().find_last_of(",");
+          SourceRange cnt_range(
+            arg0_expr->getBeginLoc(),
+            arg0_expr->getBeginLoc().getLocWithOffset(arg0_len)
+          );
+          SourceRange unit_range(
+            arg1_expr->getBeginLoc(),
+            arg1_expr->getEndLoc().getLocWithOffset(1)
+          );
+          sprintf(
+            bites_args, "(%s), (%s)",
+            Lexer::getSourceText(CharSourceRange(cnt_range, false), sm, result.Context->getLangOpts()).str().c_str(),
+            Lexer::getSourceText(CharSourceRange(unit_range, false), sm, result.Context->getLangOpts()).str().c_str()
           );
         }
-        Dylinx::Instance().rw_ptr->InsertText(
-          call_expr->getEndLoc().getLocWithOffset(2),
-          "\n}"
+
+        // Aggregate whole init function call
+        char replace_expr[300];
+        sprintf(
+          replace_expr,
+          "__dylinx_object_init_(%s, %s, %u, DYLINX_LOCK_TYPE_%d);",
+          bites_args,
+          init_offsets.size()? comp_liter.c_str(): "NULL",
+          init_offsets.size(),
+          Dylinx::Instance().lock_i
         );
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          SourceRange(
+            call_expr->getBeginLoc(),
+            call_expr->getEndLoc().getLocWithOffset(1)
+          ),
+          replace_expr
+        );
+        save2metas(uid, meta);
+        save2altered_list(src_id, sm);
       }
-      save2metas(uid, meta);
-      save2altered_list(src_id, sm);
     }
   }
 };
@@ -545,7 +556,7 @@ public:
       );
       std::vector<std::string> init_str;
       std::vector<std::string> field_seq;
-      traverse_init_fields(vd->getType().getTypePtr()->getAsRecordDecl(), init_str, field_seq);
+      traverse_init_fields_with_name(vd->getType().getTypePtr()->getAsRecordDecl(), init_str, field_seq);
       if (!init_str.size())
         return;
 #ifdef __DYLINX_DEBUG__
