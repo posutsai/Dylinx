@@ -39,9 +39,9 @@ int backoff_init(void **entity, pthread_mutexattr_t *attr) {
   return 0;
 }
 
-int backoff_lock(void **entity) {
+int backoff_lock(void *entity) {
   uint32_t delay = DEFAULT_BACKOFF_DELAY;
-  backoff_lock_t *mtx = *entity;
+  backoff_lock_t *mtx = entity;
   printf("here\n");
   while (1) {
     printf("in loop\n");
@@ -57,20 +57,20 @@ int backoff_lock(void **entity) {
   return 0;
 }
 
-int backoff_unlock(void **entity) {
+int backoff_unlock(void *entity) {
   COMPILER_BARRIER();
-  backoff_lock_t *mtx = *entity;
+  backoff_lock_t *mtx = entity;
   mtx->spin_lock = UNLOCKED;
   return 1;
 }
 
-int backoff_destroy(void **entity) {
-  backoff_lock_t *mtx = *entity;
+int backoff_destroy(void *entity) {
+  backoff_lock_t *mtx = entity;
   free(mtx);
   return 1;
 }
 
-int backoff_condwait(pthread_cond_t *cond, void **entity) {}
+int backoff_cond_wait(pthread_cond_t *cond, void *entity, const struct timespec *time) {}
+int backoff_trylock(void *entity) {}
 
-DYLINX_EXTERIOR_WRAPPER_IMPLE(backoff);
 #endif

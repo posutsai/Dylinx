@@ -292,7 +292,7 @@ public:
 
       if (const CallExpr *call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call")) {
         // Deal with compound literal (3rd argument)
-        std::string comp_liter = "(int []) {";
+        std::string comp_liter = "(uint32_t []) {";
         for (auto it = init_offsets.begin(); it != init_offsets.end(); it++) {
           char format[50];
           sprintf(format, " %lu%s", (*it) / 8, it == init_offsets.end() - 1? " ": ",");
@@ -853,23 +853,25 @@ public:
           header.getLocWithOffset(-1 * col),
           "\n#ifndef __DYLINX_REPLACE_PTHREAD_NATIVE__\n"
           "#define __DYLINX_REPLACE_PTHREAD_NATIVE__\n"
+          "#define pthread_mutex_t pthread_mutex_original_t\n"
           "#define pthread_mutex_init pthread_mutex_init_original\n"
           "#define pthread_mutex_lock pthread_mutex_lock_original\n"
           "#define pthread_mutex_unlock pthread_mutex_unlock_original\n"
           "#define pthread_mutex_destroy pthread_mutex_destroy_original\n"
-          "#define pthread_mutex_trylock pthread_mutex_destroy_original\n"
+          "#define pthread_mutex_trylock pthread_mutex_trylock_original\n"
           "#define pthread_cond_wait pthread_cond_wait_original\n"
-          "#define pthread_cond_timedwait pthread_mutex_destroy_original"
+          "#define pthread_cond_timedwait pthread_cond_timedwait_original"
         );
         Dylinx::Instance().rw_ptr->InsertText(
           header.getLocWithOffset(std::string("<pthread.h>").length() + 1),
+          "#undef pthread_mutex_t\n"
           "#undef pthread_mutex_init\n"
           "#undef pthread_mutex_lock\n"
           "#undef pthread_mutex_unlock\n"
           "#undef pthread_mutex_destroy\n"
           "#undef pthread_mutex_trylock\n"
           "#undef pthread_cond_wait\n"
-          "#undef pthread_cond_timedwait"
+          "#undef pthread_cond_timedwait\n"
           "#include \"dylinx-glue.h\"\n"
           "#endif //__DYLINX_REPLACE_PTHREAD_NATIVE__\n"
         );

@@ -1,8 +1,29 @@
-#include <pthread.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <assert.h>
+#include <time.h>
+#ifndef __DYLINX_REPLACE_PTHREAD_NATIVE__
+#define __DYLINX_REPLACE_PTHREAD_NATIVE__
+#define pthread_mutex_t pthread_mutex_original_t
+#define pthread_mutex_init pthread_mutex_init_original
+#define pthread_mutex_lock pthread_mutex_lock_original
+#define pthread_mutex_unlock pthread_mutex_unlock_original
+#define pthread_mutex_destroy pthread_mutex_destroy_original
+#define pthread_mutex_trylock pthread_mutex_trylock_original
+#define pthread_cond_wait pthread_cond_wait_original
+#define pthread_cond_timedwait pthread_cond_timedwait_original
+#include <pthread.h>
+#undef pthread_mutex_init
+#undef pthread_mutex_lock
+#undef pthread_mutex_unlock
+#undef pthread_mutex_destroy
+#undef pthread_mutex_trylock
+#undef pthread_cond_wait
+#undef pthread_cond_timedwait
+#endif
+
 #include "runtime/dylinx-runtime-config.h"
 
 #ifndef __DYLINX_SYMBOL__
@@ -10,6 +31,7 @@
 #pragma clang diagnostic ignored "-Wincompatible-pointer-types"
 
 #define ALLOWED_LOCK_TYPE pthreadmtx, ttas, backoff
+#define LOCK_TYPE_LIMIT 10
 
 #define FE_0(WHAT)
 #define FE_1(WHAT, X) WHAT(X)
@@ -30,87 +52,160 @@
       FE_2,FE_1,FE_0,                                                       \
   )(action,__VA_ARGS__)
 
-typedef struct __attribute__((packed)) GenericInterface {
-  void *entity;
-  int (*initializer)(void **, pthread_mutexattr_t *);
-  int (*locker)(void **);
-  int (*unlocker)(void **);
-  int (*finalizer)(void **);
-  int (*cond_waiter)(pthread_cond_t *, void **);
-} generic_interface_t;
+typedef struct InjectedInterfaces {
+  int (*init_fptr)(void **, pthread_mutexattr_t *);
+  int (*lock_fptr)(void *);
+  int (*trylock_fptr)(void *);
+  int (*unlock_fptr)(void *);
+  int (*destroy_fptr)(void *);
+  int (*cond_timedwait_fptr)(pthread_cond_t *, void *, const struct timespec *);
+} dlx_injected_interface_t;
 
-#define DYLINX_EXTERIOR_WRAPPER_PROTO(ltype)                                                                  \
-  typedef union Dylinx ## ltype ## Lock {                                                                     \
-    generic_interface_t interface;                                                                            \
-    pthread_mutex_t dummy_lock;                                                                               \
-  } dylinx_ ## ltype ## lock_t;                                                                               \
-  int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *, pthread_mutexattr_t *);\
-  int ltype ## _init(void **, pthread_mutexattr_t *);\
-  int ltype ## _lock(void **);\
-  int ltype ## _unlock(void **);\
-  int ltype ## _destroy(void **);\
-  int ltype ## _condwait(pthread_cond_t *, void **);
+typedef struct __attribute__((packed)) GenericLock {
+  // Point to actual memory resource for future usage.
+  void *lock_obj;
+  // check_code is used as telling whether the specific
+  // instance is already initialized or not. If it is
+  // already initialized, it should be 0x32CB00B5. The
+  // member value should also be modified in destroy
+  // function since os may reuse the memory.
+  uint32_t check_code;
+  int32_t type_id;
+  uint32_t ins_id;
+  dlx_injected_interface_t *methods;
+  char padding[sizeof(pthread_mutex_t) - 3 * sizeof(uint32_t) - sizeof(void *)]
+} dlx_generic_lock_t;
 
-DYLINX_EXTERIOR_WRAPPER_PROTO(ttas)
-DYLINX_EXTERIOR_WRAPPER_PROTO(backoff);
-DYLINX_EXTERIOR_WRAPPER_PROTO(pthreadmtx);
+#define DLX_LOCK_TEMPLATE_PROTOTYPE(ltype)                                                                     \
+  typedef union Dylinx ## ltype ## Lock {                                                                      \
+    dlx_generic_lock_t interface;                                                                              \
+    pthread_mutex_original_t dummy_lock;                                                                                \
+  } dlx_ ## ltype ## _t;                                                                                       \
+  int dlx_ ## ltype ## _var_init(                                                                              \
+    dlx_ ## ltype ## _t *,                                                                                     \
+    pthread_mutexattr_t *,                                                                                     \
+    char *var_name, char *file, int line                                                                       \
+  );                                                                                                           \
+  int dlx_ ## ltype ## _arr_init(                                                                              \
+    dlx_ ## ltype ## _t *,                                                                                     \
+    uint32_t,                                                                                                  \
+    char *var_name, char *file, int line                                                                       \
+  );                                                                                                           \
+  void *dlx_ ## ltype ## _obj_init(                                                                            \
+    uint32_t cnt,                                                                                              \
+    uint32_t unit,                                                                                             \
+    uint32_t *offsets,                                                                                         \
+    uint32_t n_offset,                                                                                         \
+    char *file,                                                                                                \
+    int line                                                                                                   \
+  );                                                                                                           \
+  int ltype ## _init(void **, pthread_mutexattr_t *);                                                          \
+  int ltype ## _lock(void *);                                                                                  \
+  int ltype ## _attempt(void *);                                                                               \
+  int ltype ## _unlock(void *);                                                                                \
+  int ltype ## _destroy(void *);                                                                               \
+  int ltype ## _cond_timedwait(pthread_cond_t *, void *, const struct timespec *);
 
-#define DYLINX_BACKOFF_INITIALIZER { malloc(sizeof(backoff_lock_t)), backoff_init, backoff_lock, backoff_unlock, backoff_destroy, backoff_condwait }
-#define DYLINX_TTAS_INITIALIZER { malloc(sizeof(ttas_lock_t)), ttas_init, ttas_lock, ttas_unlock, ttas_destroy, ttas_condwait }
+#define pthread_mutex_t dlx_generic_lock_t
 
-int dylinx_error_init(generic_interface_t *);
-int dylinx_error_enable(generic_interface_t *);
-int dylinx_error_disable(generic_interface_t *);
-int dylinx_error_destroy(generic_interface_t *);
-int dylinx_error_condwait(pthread_cond_t *cond, generic_interface_t *mtx);
-int dylinx_forward_enable(generic_interface_t *gen_lock);
-int dylinx_forward_disable(generic_interface_t *gen_lock);
-int dylinx_forward_destroy(generic_interface_t *gen_lock);
-int dylinx_forward_condwait(pthread_cond_t *cond, generic_interface_t *mtx);
+DLX_LOCK_TEMPLATE_PROTOTYPE(ttas)
+DLX_LOCK_TEMPLATE_PROTOTYPE(backoff);
+DLX_LOCK_TEMPLATE_PROTOTYPE(pthreadmtx);
 
+#define DYLINX_DUMMY_INITIALIZER {NULL, 0, -1, {0}}
+
+// For debugging and tracking purpose, we add the last three function argument.
+int dlx_untrack_var_init(dlx_generic_lock_t *, const pthread_mutexattr_t *, char *var_name, char *file, int line);
+int dlx_untrack_arr_init(dlx_generic_lock_t *, uint32_t, char *var_name, char *file, int line);
+int dlx_error_var_init(void *, const pthread_mutexattr_t *, char *var_name, char *file, int line);
+int dlx_error_arr_init(void *, uint32_t, char *var_name, char *file, int line);
+
+int dlx_error_enable(void *);
+int dlx_error_disable(void *);
+int dlx_error_destroy(void *);
+int dlx_error_trylock(void *);
+int dlx_error_cond_timedwait(pthread_cond_t *, void *, const struct timespec *);
+int dlx_error_cond_wait(pthread_cond_t *, void *);
+int dlx_forward_enable(void *);
+int dlx_forward_disable(void *);
+int dlx_forward_destroy(void *);
+int dlx_forward_trylock(void *);
+int dlx_forward_cond_wait(pthread_cond_t *, void *);
+int dlx_forward_cond_timedwait(pthread_cond_t *, void *, const struct timespec *);
+
+//  Direct call by user
+//  ----------------------------------------------------------------------------
 //  Since we force mutex to get initialized when the memory is allocated,
 //  there is no chance that initialization encounters typeless lock. However,
 //  things are different in other interfaces. When encoutering acceptable
 //  types argument, it naively bypass the lock and conduct corresponding ops.
 //  The reason why we use _Generic function here is to raise error while inputing
 //  unacceptable argument.
-#define dylinx_init_func(ltype) dylinx_ ## ltype ## lock_t *: dylinx_ ## ltype ## lock_init,
-#define DYLINX_INIT_LOCK_LIST(...) FOR_EACH(dylinx_init_func, __VA_ARGS__)
-#define __dylinx_member_init_(entity, attr) _Generic((entity),              \
-  DYLINX_INIT_LOCK_LIST(ALLOWED_LOCK_TYPE)                                  \
-  default: dylinx_error_init                                                \
-)(entity, attr)
+#define DLX_GENERIC_VAR_INIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_ ## ltype ## _var_init,
+#define DLX_GENERIC_VAR_INIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_VAR_INIT_TYPE_REDIRECT, __VA_ARGS__)
+#define __dylinx_member_init_(entity, attr) _Generic((entity),                                                 \
+  DLX_GENERIC_VAR_INIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
+  dlx_generic_lock_t *: dlx_untrack_var_init,                                                                  \
+  default: dlx_error_init                                                                                      \
+)(entity, attr, #entity, __FILE__, __LINE__)
 
-#define dylinx_enable_func(ltype) dylinx_ ## ltype ## lock_t *: dylinx_forward_enable,
-#define DYLINX_ENABLE_LOCK_LIST(...) FOR_EACH(dylinx_enable_func, __VA_ARGS__)
-#define __dylinx_generic_enable_(entity) _Generic((entity),                 \
-  DYLINX_ENABLE_LOCK_LIST(ALLOWED_LOCK_TYPE)                                \
-  generic_interface_t *: dylinx_forward_enable,                             \
-  default: dylinx_error_enable                                              \
+#define __dylinx_object_init_(cnt, unit, offsets, n_offset, ltype)                                             \
+  dlx_ ## ltype ## _obj_init(cnt, unit, offsets, n_offset, __FILE__, __LINE__)
+
+#define DLX_GENERIC_ARR_INIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_ ## ltype ## _arr_init,
+#define DLX_GENERIC_ARR_INIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_ARR_INIT_TYPE_REDIRECT, __VA_ARGS__)
+#define __dylinx_array_init_(entity, len) _Generic((entity),                                                   \
+  DLX_GENERIC_ARR_INIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
+  dlx_generic_lock_t *: dlx_untrack_arr_init,                                                                  \
+  default: dlx_error_arr_init                                                                                  \
+)(entity, len, #entity, __FILE__, __LINE__)
+
+#define DLX_GENERIC_ENABLE_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_enable,
+#define DLX_GENERIC_ENABLE_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_ENABLE_TYPE_REDIRECT, __VA_ARGS__)
+#define pthread_mutex_lock(entity) _Generic((entity),                                                         \
+  DLX_GENERIC_ENABLE_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                             \
+  dlx_generic_lock_t *: dlx_forward_enable,                                                                   \
+  default: dlx_error_enable                                                                                   \
 )(entity)
 
-#define dylinx_disable_func(ltype) dylinx_ ## ltype ## lock_t *: dylinx_forward_disable,
-#define DYLINX_DISABLE_LOCK_LIST(...) FOR_EACH(dylinx_disable_func, __VA_ARGS__)
-#define __dylinx_generic_disable_(entity) _Generic((entity),                \
-  DYLINX_DISABLE_LOCK_LIST(ALLOWED_LOCK_TYPE)                               \
-  generic_interface_t *: dylinx_forward_disable,                            \
-  default: dylinx_error_disable                                             \
+#define DLX_GENERIC_DISABLE_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_disable,
+#define DLX_GENERIC_DISABLE_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_DISABLE_TYPE_REDIRECT, __VA_ARGS__)
+#define pthread_mutex_unlock(entity) _Generic((entity),                                                       \
+  DLX_GENERIC_DISABLE_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                                    \
+  dlx_generic_lock_t *: dlx_forward_disable,                                                                  \
+  default: dlx_error_disable                                                                                  \
 )(entity)
 
-#define dylinx_destroy_func(ltype) dylinx_ ## ltype ## lock_t *: dylinx_forward_destroy,
-#define DYLINX_DESTROY_LOCK_LIST(...) FOR_EACH(dylinx_destroy_func, __VA_ARGS__)
-#define __dylinx_generic_destroy_(entity) _Generic((entity),                \
-  DYLINX_DESTROY_LOCK_LIST(ALLOWED_LOCK_TYPE)                               \
-  generic_interface_t *: dylinx_forward_destroy,                            \
-  default: dylinx_error_destroy                                             \
+#define DLX_GENERIC_DESTROY_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_destroy,
+#define DLX_GENERIC_DESTROY_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_DESTROY_TYPE_REDIRECT, __VA_ARGS__)
+#define pthread_mutex_destroy(entity) _Generic((entity),                                                      \
+  DLX_GENERIC_DESTROY_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
+  dlx_generic_lock_t *: dlx_forward_destroy,                                                                  \
+  default: dlx_error_destroy                                                                                  \
 )(entity)
 
-#define dylinx_condwait_func(ltype) dylinx_ ## ltype ## lock_t *: dylinx_forward_condwait,
-#define DYLINX_CONDWAIT_LOCK_LIST(...) FOR_EACH(dylinx_condwait_func, __VA_ARGS__)
-#define __dylinx_generic_condwait_(cond, mtx) _Generic((mtx),               \
-  DYLINX_CONDWAIT_LOCK_LIST(ALLOWED_LOCK_TYPE)                              \
-  generic_interface_t *: dylinx_forward_condwait,                           \
-  default: dylinx_error_condwait                                            \
+#define DLX_GENERIC_TRYLOCK_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_trylock,
+#define DLX_GENERIC_TRYLOCK_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_TRYLOCK_TYPE_REDIRECT, __VA_ARGS__)
+#define pthread_mutex_trylock(entity) _Generic((entity),                                                     \
+  DLX_GENERIC_TRYLOCK_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                           \
+  dlx_generic_lock_t *: dlx_forward_trylock,                                                                 \
+  default: dlx_error_trylock                                                                                 \
+)(entity)
+
+#define DLX_GENERIC_COND_WAIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_cond_wait,
+#define DLX_GENERIC_COND_WAIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_COND_WAIT_TYPE_REDIRECT, __VA_ARGS__)
+#define pthread_cond_wait(cond, mtx) _Generic((mtx),                                                        \
+  DLX_GENERIC_COND_WAIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                              \
+  dlx_generic_lock_t *: dlx_forward_cond_wait,                                                              \
+  default: dlx_error_cond_wait                                                                               \
 )(cond, mtx)
+
+#define DLX_GENERIC_COND_TIMEDWAIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_cond_timedwait,
+#define DLX_GENERIC_COND_TIMEDWAIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_COND_TIMEDWAIT_TYPE_REDIRECT, __VA_ARGS__)
+#define pthread_cond_timedwait(cond, mtx, time) _Generic((mtx),                                             \
+  DLX_GENERIC_COND_TIMEDWAIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                   \
+  dlx_generic_lock_t *: dlx_forward_cond_timedwait,                                                         \
+  default: dlx_error_cond_timedwait                                                                         \
+)(cond, mtx, time)
 
 #endif // __DYLINX_SYMBOL__

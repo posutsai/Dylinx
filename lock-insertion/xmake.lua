@@ -7,6 +7,7 @@ target("dylinx")
   set_toolchain("cxx", "/usr/local/bin/clang")
   add_cxflags("-fno-rtti")
   add_includedirs("include", "/home/plate/llvm-project/clang/lib")
+  add_defines("__DYLINX_DEBUG__")
   add_ldflags(
     "-lclangAnalysis", "-lclangApplyReplacements", "-lclangARCMigrate", "-lclangAST",
     "-lclangASTMatchers", "-lclangBasic", "-lclangChangeNamespace", "-lclangCodeGen",
@@ -23,19 +24,15 @@ target("dylinx")
     "-lclangToolingSyntax", "-lclangTransformer", "$(shell llvm-config --ldflags --libs --system-libs)",
     "-lyaml-cpp"
   )
-
-  after_build(function (target)
-    print("[TODO] Build soft link !!!!")
-  end)
 target_end()
 
 target("dlx-glue")
   set_kind("shared")
-  add_files("src/glue/*.c")
+  add_files("src/glue/*.c|dylinx-init.c")
   add_includedirs("src/glue")
-  -- add_defines("__DYLINX_DEBUG__")
+  add_defines("__DYLINX_DEBUG__")
   set_targetdir("build/lib")
-  set_languages("c99")
+  set_languages("c11")
   set_toolchain("cc", "/usr/local/bin/clang")
   add_cflags("-I/usr/local/lib/clang/10.0.0/include")
   add_ldflags("-lpthread")

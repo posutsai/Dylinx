@@ -1,38 +1,25 @@
 #include "dylinx-padding.h"
+#include <time.h>
+#include <stdint.h>
+#include <stdio.h>
 #ifndef __DYLINX_TOPOLOGY__
 #define __DYLINX_TOPOLOGY__
 #pragma clang diagnostic ignored "-Waddress-of-packed-member"
 
-#define LOCK_TYPE_CNT 10
 #define L_CACHE_LINE_SIZE 64
 #define LOCKED 0
 #define UNLOCKED 1
 #define CPU_PAUSE() __asm__ __volatile__("pause\n" : : : "memory")
-
-#define dylinx_init_proto(ltype) int ltype ## _init(void **, pthread_mutexattr_t *);
-#define INIT_PROTO_LIST(...) FOR_EACH(dylinx_init_proto, __VA_ARGS__)
-#define dylinx_lock_proto(ltype) int ltype ## _lock(void **);
-#define LOCK_PROTO_LIST(...) FOR_EACH(dylinx_lock_proto, __VA_ARGS__)
-#define dylinx_unlock_proto(ltype) int ltype ## _unlock(void **);
-#define UNLOCK_PROTO_LIST(...) FOR_EACH(dylinx_unlock_proto, __VA_ARGS__)
-#define dylinx_destroy_proto(ltype) int ltype ## _destroy(void **);
-#define DESTROY_PROTO_LIST(...) FOR_EACH(dylinx_destroy_proto, __VA_ARGS__)
-#define dylinx_condwait_proto(ltype) int ltype ## _condwait(pthread_cond_t *, void **);
-#define CONDWAIT_PROTO_LIST(...) FOR_EACH(dylinx_condwait_proto, __VA_ARGS__)
 #define HANDLING_ERROR(msg)                                                   \
   do {                                                                        \
     printf(                                                                   \
-      "=============== [%s in %s:%d] ===============\n%s\n",                  \
-      __FUNCTION__, __FILE__, __LINE__, msg                                   \
+      "=============== [%30s] ===============\n"                              \
+      "%s\n"                                                                  \
+      "==============================================================\n",     \
+      __FUNCTION__, msg                                                       \
     );                                                                        \
     assert(0);                                                                \
   } while(0)
-
-INIT_PROTO_LIST(ALLOWED_LOCK_TYPE)
-LOCK_PROTO_LIST(ALLOWED_LOCK_TYPE)
-UNLOCK_PROTO_LIST(ALLOWED_LOCK_TYPE)
-DESTROY_PROTO_LIST(ALLOWED_LOCK_TYPE)
-CONDWAIT_PROTO_LIST(ALLOWED_LOCK_TYPE)
 
 extern inline void *alloc_cache_align(size_t n) {
   void *res = 0;
@@ -60,44 +47,86 @@ static inline uint8_t l_tas_uint8(volatile uint8_t *addr) {
   return (uint8_t)oldval;
 }
 
-// {{{ degenerate pthread interface
-int pthreadmtx_init(void **entity, pthread_mutexattr_t *attr) {
-  *entity = malloc(sizeof(pthread_mutex_t));
-  return pthread_mutex_init((pthread_mutex_t *)*entity, attr);
-}
-int pthreadmtx_lock(void **entity) {
-  return pthread_mutex_lock((pthread_mutex_t *)*entity);
-}
-int pthreadmtx_unlock(void **entity) {
-  return pthread_mutex_unlock((pthread_mutex_t *)*entity);
-}
-int pthreadmtx_destroy(void **entity) {
-  return pthread_mutex_destroy((pthread_mutex_t *)*entity);
-}
-int pthreadmtx_condwait(pthread_cond_t *cond, void **entity) {}
-// }}}
-
 #define COMPILER_BARRIER() __asm__ __volatile__("" : : : "memory")
-#define DYLINX_EXTERIOR_WRAPPER_IMPLE(ltype)                                                             \
-int dylinx_ ## ltype ## lock_init(dylinx_ ## ltype ## lock_t *lock, pthread_mutexattr_t *attr) {              \
-  generic_interface_t *gen_lock = (generic_interface_t *)lock;                                                \
-  gen_lock->initializer = ltype ## _init;                                                                     \
-  gen_lock->locker = ltype ## _lock;                                                                          \
-  gen_lock->unlocker = ltype ## _unlock;                                                                      \
-  gen_lock->finalizer = ltype ## _destroy;                                                                    \
-  gen_lock->cond_waiter = ltype ## _condwait;                                                                 \
-  return gen_lock->initializer(&gen_lock->entity, attr);                                             \
+
+// Serve every dispatched initialization function call, including
+// normal variable, array and pointer with malloc-like function
+// call.
+#define DLX_LOCK_TEMPLATE_IMPLEMENT(ltype)                                                                    \
+int dlx_ ## ltype ##_var_init(                                                                                \
+  dlx_ ## ltype ## _t *lock,                                                                                  \
+  pthread_mutexattr_t *attr,                                                                                  \
+  char *var_name, char *file, int line                                                                        \
+  ) {                                                                                                         \
+  dlx_generic_lock_t *gen_lock = (dlx_generic_lock_t *)lock;                                                  \
+  gen_lock->methods = calloc(1, sizeof(dlx_injected_interface_t));                                            \
+  gen_lock->methods->init_fptr = ltype ## _init;                                                               \
+  gen_lock->methods->lock_fptr = ltype ## _lock;                                                               \
+  gen_lock->methods->trylock_fptr = ltype ## _trylock;                                                         \
+  gen_lock->methods->unlock_fptr = ltype ## _unlock;                                                           \
+  gen_lock->methods->destroy_fptr = ltype ## _destroy;                                                         \
+  gen_lock->methods->cond_timedwait_fptr = ltype ## _cond_timedwait;                                           \
+  gen_lock->check_code = 0x32CB00B5;                                                                  \
+  if (!gen_lock->methods || gen_lock->methods->init_fptr(&gen_lock->lock_obj, attr)) {                         \
+    printf("Error happens while initializing lock variable %s in %s L%4d\n", var_name, file, line);           \
+    return -1;                                                                                                \
+  }                                                                                                           \
+  return 0;                                                                                                   \
 }                                                                                                             \
                                                                                                               \
-void dylinx_ ## ltype ## lock_fill_array(dylinx_ ## ltype ## lock_t *head, size_t len) {                      \
+int dlx_ ## ltype ## _arr_init(                                                                               \
+  dlx_ ## ltype ## _t *head,                                                                                  \
+  uint32_t len,                                                                                               \
+  char *var_name, char *file, int line                                                                        \
+  ) {                                                                                                         \
   for (int i = 0; i < len; i++) {                                                                             \
-    generic_interface_t *gen_lock = (generic_interface_t *)head + i;                                          \
-    gen_lock->initializer = ltype ## _init;                                                                   \
-    gen_lock->locker = ltype ## _lock;                                                                        \
-    gen_lock->unlocker = ltype ## _unlock;                                                                    \
-    gen_lock->finalizer = ltype ## _destroy;                                                                  \
-    gen_lock->cond_waiter = ltype ## _condwait;                                                                \
+    dlx_generic_lock_t *gen_lock = (dlx_generic_lock_t *)head + i;                                            \
+    gen_lock->methods = calloc(1, sizeof(dlx_injected_interface_t));                                          \
+    gen_lock->methods->init_fptr = ltype ## _init;                                                             \
+    gen_lock->methods->lock_fptr = ltype ## _lock;                                                             \
+    gen_lock->methods->trylock_fptr = ltype ## _trylock;                                                       \
+    gen_lock->methods->unlock_fptr = ltype ## _unlock;                                                         \
+    gen_lock->methods->destroy_fptr = ltype ## _destroy;                                                       \
+    gen_lock->methods->cond_timedwait_fptr = ltype ## _cond_timedwait;                                         \
+    gen_lock->check_code = 0x32CB00B5;                                                                \
+    if (!gen_lock->methods || gen_lock->methods->init_fptr(&gen_lock->lock_obj, NULL)) {                       \
+      printf("Error happens while initializing lock array %s in %s L%4d\n", var_name, file, line);            \
+      return -1;                                                                                              \
+    }                                                                                                         \
   }                                                                                                           \
+  return 0;                                                                                                   \
+}                                                                                                             \
+                                                                                                              \
+void *dlx_ ## ltype ## _obj_init(                                                                             \
+  uint32_t cnt,                                                                                               \
+  uint32_t unit,                                                                                              \
+  uint32_t *offsets,                                                                                          \
+  uint32_t n_offset,                                                                                          \
+  char *file,                                                                                                 \
+  int line                                                                                                    \
+  ) {                                                                                                         \
+  char *object = calloc(cnt, unit);\
+  if (object) {                                                                     \
+    for (uint32_t c = 0; c < cnt; c++) {                                                                      \
+      for (uint32_t n = 0; n < n_offset; n++) {                                                               \
+        dlx_generic_lock_t *lock = object + c * unit + offsets[n];                                            \
+        lock->methods = calloc(1, sizeof(dlx_injected_interface_t));                                          \
+        lock->methods->init_fptr = ltype ## _init;                                                             \
+        lock->methods->lock_fptr = ltype ## _lock;                                                             \
+        lock->methods->trylock_fptr = ltype ## _trylock;                                                       \
+        lock->methods->unlock_fptr = ltype ## _unlock;                                                         \
+        lock->methods->destroy_fptr = ltype ## _destroy;                                                       \
+        lock->methods->cond_timedwait_fptr = ltype ## _cond_timedwait;                                         \
+        lock->check_code = 0x32CB00B5;                                                                \
+        if ((!lock->methods || lock->methods->init_fptr(&lock->lock_obj, NULL))) {                         \
+          printf("Error happens while initializing memory allocated object in %s L%4d\n", file, line);        \
+          return NULL;                                                                                        \
+        }                                                                                                     \
+      }                                                                                                       \
+    }                                                                                                         \
+    return object;                                                                                            \
+  }                                                                                                           \
+  return NULL;                                                                                                \
 }
 
 #endif
