@@ -256,12 +256,12 @@ public:
       if (sm.isAtStartOfImmediateMacroExpansion(type_start)) {
         Dylinx::Instance().rw_ptr->ReplaceText(
           sm.getImmediateExpansionRange(type_start).getAsRange(),
-          "generic_interface_t *"
+          "dlx_generic_lock_t *"
         );
       } else {
         Dylinx::Instance().rw_ptr->ReplaceText(
           SourceRange(type_start, type_end),
-          "generic_interface_t *"
+          "dlx_generic_lock_t *"
         );
       }
     }
@@ -276,7 +276,7 @@ public:
             ),
             sizeof_expr->getRParenLoc().getLocWithOffset(-1)
           ),
-          "generic_interface_t"
+          "dlx_generic_lock_t"
         );
         meta["modification_type"] = MUTEX_MEM_ALLOCATION;
       } else {
@@ -342,7 +342,7 @@ public:
         char replace_expr[300];
         sprintf(
           replace_expr,
-          "__dylinx_object_init_(%s, %s, %u, DYLINX_LOCK_TYPE_%d);",
+          "__dylinx_object_init_(%s, %s, %u, ((DYLINX_LOCK_TYPE_%d *)0));",
           bites_args,
           init_offsets.size()? comp_liter.c_str(): "NULL",
           init_offsets.size(),
@@ -467,7 +467,7 @@ public:
       Dylinx::Instance().rw_ptr->ReplaceText(
         token->getLocation(),
         token->getLength(),
-        "generic_interface_t *"
+        "dlx_generic_lock_t *"
       );
       save2altered_list(src_id, sm);
     }
@@ -809,7 +809,7 @@ public:
             sm.getSpellingLoc(begin_loc).getLocWithOffset(1),
             sm.getSpellingLoc(end_loc).getLocWithOffset(-1)
           ),
-          "generic_interface_t *"
+          "dlx_generic_lock_t *"
         );
         begin_loc = sm.getSpellingLoc(begin_loc);
       }
@@ -819,7 +819,7 @@ public:
             cast_expr->getLParenLoc().getLocWithOffset(1),
             cast_expr->getRParenLoc().getLocWithOffset(-1)
           ),
-          "generic_interface_t *"
+          "dlx_generic_lock_t *"
         );
       }
       FileID src_id = sm.getFileID(begin_loc);

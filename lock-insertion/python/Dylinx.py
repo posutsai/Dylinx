@@ -14,14 +14,11 @@ def init_wo_callexpr(ltype, entity, content):
     if entity.get("define_init", False):
         content.append(
             f"#define DYLINX_LOCK_INIT_{entity['id']} "
-            f"{{ malloc(dlx_{ltype.lower()}_t), 0x32CB00B5, {entity['id']}, 0, malloc(dlx_injected_interface_t), {{0}} }}"
+            f"{{ malloc(sizeof(dlx_{ltype.lower()}_t)), 0x32CB00B5, {entity['id']}, 0, malloc(sizeof(dlx_injected_interface_t)), {{0}} }}"
         )
 
 def replace_type(ltype, entity, content):
     content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_{ltype.lower()}_t")
-
-def forward_func(ltype, entity, content):
-    content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} {ltype.lower()}")
 
 class NaiveSubject:
     def __init__(self, config_path, verbose=logging.DEBUG, insertion=True, fix=False, include_posix=True):
@@ -29,8 +26,7 @@ class NaiveSubject:
             "VARIABLE": init_wo_callexpr,
             "ARRAY": replace_type,
             "FIELD_INSERT": replace_type,
-            "MUTEX_MEM_ALLOCATION": forward_func,
-            "STRUCT_MEM_ALLOCATION": forward_func
+            "MUTEX_MEM_ALLOCATION": replace_type,
         }
         self.logger = logging.getLogger("dylinx_logger")
         self.logger.setLevel(verbose)

@@ -125,6 +125,7 @@ int dlx_untrack_var_init(dlx_generic_lock_t *, const pthread_mutexattr_t *, char
 int dlx_untrack_arr_init(dlx_generic_lock_t *, uint32_t, char *var_name, char *file, int line);
 int dlx_error_var_init(void *, const pthread_mutexattr_t *, char *var_name, char *file, int line);
 int dlx_error_arr_init(void *, uint32_t, char *var_name, char *file, int line);
+int dlx_error_obj_init(uint32_t, uint32_t, uint32_t *, uint32_t, char *, int);
 
 int dlx_error_enable(void *);
 int dlx_error_disable(void *);
@@ -152,11 +153,15 @@ int dlx_forward_cond_timedwait(pthread_cond_t *, void *, const struct timespec *
 #define __dylinx_member_init_(entity, attr) _Generic((entity),                                                 \
   DLX_GENERIC_VAR_INIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
   dlx_generic_lock_t *: dlx_untrack_var_init,                                                                  \
-  default: dlx_error_init                                                                                      \
+  default: dlx_error_var_init                                                                                      \
 )(entity, attr, #entity, __FILE__, __LINE__)
 
-#define __dylinx_object_init_(cnt, unit, offsets, n_offset, ltype)                                             \
-  dlx_ ## ltype ## _obj_init(cnt, unit, offsets, n_offset, __FILE__, __LINE__)
+#define DLX_GENERIC_OBJ_INIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_ ## ltype ## _obj_init,
+#define DLX_GENERIC_OBJ_INIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_OBJ_INIT_TYPE_REDIRECT, __VA_ARGS__)
+#define __dylinx_object_init_(cnt, unit, offsets, n_offset, ltype) _Generic((ltype),                           \
+  DLX_GENERIC_OBJ_INIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
+  default: dlx_error_obj_init                                                                                  \
+)(cnt, unit, offsets, n_offset,  __FILE__, __LINE__)
 
 #define DLX_GENERIC_ARR_INIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_ ## ltype ## _arr_init,
 #define DLX_GENERIC_ARR_INIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_ARR_INIT_TYPE_REDIRECT, __VA_ARGS__)
@@ -177,7 +182,7 @@ int dlx_forward_cond_timedwait(pthread_cond_t *, void *, const struct timespec *
 #define DLX_GENERIC_DISABLE_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_disable,
 #define DLX_GENERIC_DISABLE_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_DISABLE_TYPE_REDIRECT, __VA_ARGS__)
 #define pthread_mutex_unlock(entity) _Generic((entity),                                                       \
-  DLX_GENERIC_DISABLE_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                                    \
+  DLX_GENERIC_DISABLE_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
   dlx_generic_lock_t *: dlx_forward_disable,                                                                  \
   default: dlx_error_disable                                                                                  \
 )(entity)
@@ -200,9 +205,9 @@ int dlx_forward_cond_timedwait(pthread_cond_t *, void *, const struct timespec *
 
 #define DLX_GENERIC_COND_WAIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_cond_wait,
 #define DLX_GENERIC_COND_WAIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_COND_WAIT_TYPE_REDIRECT, __VA_ARGS__)
-#define pthread_cond_wait(cond, mtx) _Generic((mtx),                                                        \
-  DLX_GENERIC_COND_WAIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                              \
-  dlx_generic_lock_t *: dlx_forward_cond_wait,                                                              \
+#define pthread_cond_wait(cond, mtx) _Generic((mtx),                                                         \
+  DLX_GENERIC_COND_WAIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                         \
+  dlx_generic_lock_t *: dlx_forward_cond_wait,                                                               \
   default: dlx_error_cond_wait                                                                               \
 )(cond, mtx)
 

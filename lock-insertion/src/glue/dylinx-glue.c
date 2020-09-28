@@ -75,8 +75,21 @@ int pthread_cond_timedwait_original(pthread_cond_t *cond, pthread_mutex_t *mtx, 
     return native_cond_timedwait(cond, mtx, time);
 }
 // }}}
+//
+int dlx_error_obj_init(uint32_t cnt, uint32_t unit, uint32_t *offsets, uint32_t n_offset, char *file, int line) {
+  char error_msg[1000];
+  sprintf(
+    error_msg,
+    "Untrackable array of locks are trying to init. Possible"
+    "cause is _Generic function falls into \'default\' option."
+    "According to source code, it happens near %s L%d",
+    file, line
+  );
+  HANDLING_ERROR(error_msg);
+  return -1;
+}
 
-int dylinx_error_var_init(void *lock, const pthread_mutexattr_t *attr, char *file, char *var_name, int line) {
+int dlx_error_var_init(void *lock, const pthread_mutexattr_t *attr, char *file, char *var_name, int line) {
   char error_msg[1000];
   sprintf(
     error_msg,
