@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+#include <dlfcn.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -6,7 +8,6 @@
 #include <time.h>
 #ifndef __DYLINX_REPLACE_PTHREAD_NATIVE__
 #define __DYLINX_REPLACE_PTHREAD_NATIVE__
-#define pthread_mutex_t pthread_mutex_original_t
 #define pthread_mutex_init pthread_mutex_init_original
 #define pthread_mutex_lock pthread_mutex_lock_original
 #define pthread_mutex_unlock pthread_mutex_unlock_original
@@ -24,7 +25,6 @@
 #undef pthread_cond_timedwait
 #endif
 
-#include "runtime/dylinx-runtime-config.h"
 
 #ifndef __DYLINX_SYMBOL__
 #define __DYLINX_SYMBOL__
@@ -73,13 +73,21 @@ typedef struct __attribute__((packed)) GenericLock {
   int32_t type_id;
   uint32_t ins_id;
   dlx_injected_interface_t *methods;
-  char padding[sizeof(pthread_mutex_t) - 3 * sizeof(uint32_t) - sizeof(void *)]
+  char padding[sizeof(pthread_mutex_t) - 3 * sizeof(uint32_t) - sizeof(void *)];
 } dlx_generic_lock_t;
+
+static int (*native_mutex_init)(pthread_mutex_t *, pthread_mutexattr_t *);
+static int (*native_mutex_lock)(pthread_mutex_t *);
+static int (*native_mutex_unlock)(pthread_mutex_t *);
+static int (*native_mutex_destroy)(pthread_mutex_t *);
+static int (*native_mutex_trylock)(pthread_mutex_t *);
+static int (*native_cond_wait)(pthread_cond_t *, pthread_mutex_t *);
+static int (*native_cond_timedwait)(pthread_cond_t *, pthread_mutex_t *, const struct timespec *);
 
 #define DLX_LOCK_TEMPLATE_PROTOTYPE(ltype)                                                                     \
   typedef union Dylinx ## ltype ## Lock {                                                                      \
     dlx_generic_lock_t interface;                                                                              \
-    pthread_mutex_original_t dummy_lock;                                                                                \
+    pthread_mutex_t dummy_lock;                                                                                \
   } dlx_ ## ltype ## _t;                                                                                       \
   int dlx_ ## ltype ## _var_init(                                                                              \
     dlx_ ## ltype ## _t *,                                                                                     \
@@ -105,8 +113,6 @@ typedef struct __attribute__((packed)) GenericLock {
   int ltype ## _unlock(void *);                                                                                \
   int ltype ## _destroy(void *);                                                                               \
   int ltype ## _cond_timedwait(pthread_cond_t *, void *, const struct timespec *);
-
-#define pthread_mutex_t dlx_generic_lock_t
 
 DLX_LOCK_TEMPLATE_PROTOTYPE(ttas)
 DLX_LOCK_TEMPLATE_PROTOTYPE(backoff);
@@ -209,3 +215,5 @@ int dlx_forward_cond_timedwait(pthread_cond_t *, void *, const struct timespec *
 )(cond, mtx, time)
 
 #endif // __DYLINX_SYMBOL__
+
+#include "runtime/dylinx-runtime-config.h"

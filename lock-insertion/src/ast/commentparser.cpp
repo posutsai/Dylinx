@@ -853,7 +853,6 @@ public:
           header.getLocWithOffset(-1 * col),
           "\n#ifndef __DYLINX_REPLACE_PTHREAD_NATIVE__\n"
           "#define __DYLINX_REPLACE_PTHREAD_NATIVE__\n"
-          "#define pthread_mutex_t pthread_mutex_original_t\n"
           "#define pthread_mutex_init pthread_mutex_init_original\n"
           "#define pthread_mutex_lock pthread_mutex_lock_original\n"
           "#define pthread_mutex_unlock pthread_mutex_unlock_original\n"
@@ -864,7 +863,6 @@ public:
         );
         Dylinx::Instance().rw_ptr->InsertText(
           header.getLocWithOffset(std::string("<pthread.h>").length() + 1),
-          "#undef pthread_mutex_t\n"
           "#undef pthread_mutex_init\n"
           "#undef pthread_mutex_lock\n"
           "#undef pthread_mutex_unlock\n"

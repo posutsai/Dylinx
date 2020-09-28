@@ -9,8 +9,29 @@ import pathlib
 from flask import request, jsonify, Blueprint
 import requests
 
+def init_wo_callexpr(ltype, entity, content):
+    content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_{ltype.lower()}_t")
+    if entity.get("define_init", False):
+        content.append(
+            f"#define DYLINX_LOCK_INIT_{entity['id']} "
+            f"{{ malloc(dlx_{ltype.lower()}_t), 0x32CB00B5, {entity['id']}, 0, malloc(dlx_injected_interface_t), {{0}} }}"
+        )
+
+def replace_type(ltype, entity, content):
+    content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_{ltype.lower()}_t")
+
+def forward_func(ltype, entity, content):
+    content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} {ltype.lower()}")
+
 class NaiveSubject:
     def __init__(self, config_path, verbose=logging.DEBUG, insertion=True, fix=False, include_posix=True):
+        self.init_mapping = {
+            "VARIABLE": init_wo_callexpr,
+            "ARRAY": replace_type,
+            "FIELD_INSERT": replace_type,
+            "MUTEX_MEM_ALLOCATION": forward_func,
+            "STRUCT_MEM_ALLOCATION": forward_func
+        }
         self.logger = logging.getLogger("dylinx_logger")
         self.logger.setLevel(verbose)
         with open(config_path, "r") as yaml_file:
@@ -24,30 +45,36 @@ class NaiveSubject:
         self.executable = f"{self.home_path}/build/bin/dylinx"
         self.inject_symbol()
         with open(f"{self.out_dir}/dylinx-insertion.yaml", "r") as stream:
-            meta = list(yaml.load_all(stream, Loader=yaml.FullLoader))
+            meta = list(yaml.load_all(stream, Loader=yaml.FullLoader))[0]
         self.permutation = []
-        for m in meta[0]["LockEntity"]:
-            init = ["PTHREADMTX"] if include_posix else []
-            if "lock_combination" in m.keys():
-                self.permutation.append(set([*init, *m["lock_combination"]]))
+        injection = list(self.filter_out_extern(meta["LockEntity"]))
+        for m in injection:
+            init = [("PTHREADMTX", m["id"])] if include_posix else []
+            comb = set([*init, *m.get("lock_combination", [])])
+            if len(comb) == 0:
+                raise ValueError("lock_combination shouldn't be empty")
+            self.permutation.append(comb)
 
         self.permutation = list(itertools.product(*self.permutation))
+        print(self.permutation)
+
         # Generate content for dylinx-runtime-init.c
-        with open(f"{self.out_dir}/dylinx-insertion.yaml", "r") as yaml_file:
-            meta = list(yaml.load_all(yaml_file, Loader=yaml.FullLoader))[0]
-            init_cu = set()
-            for m in meta["LockEntity"]:
-                if "extra_init" in m.keys():
-                    init_cu.add(m["extra_init"])
-            with open(f"{self.home_path}/src/glue/runtime/dylinx-runtime-init.c", "w") as rt_code:
-                code = "#include \"../dylinx-glue.h\"\n"
-                for cu in init_cu:
-                    code = code + f"extern void __dylinx_cu_init_{cu}_();\n"
-                code = code + "void __dylinx_global_mtx_init_() {\n"
-                for cu in init_cu:
-                    code = code + "__dylinx_cu_init_{}_();\n".format(cu)
-                code = code + "}\n"
-                rt_code.write(code)
+        init_cu = set()
+        for m in meta["LockEntity"]:
+            if "extra_init" in m.keys():
+                init_cu.add(m["extra_init"])
+        self.entities = meta["LockEntity"]
+        with open(f"{self.home_path}/src/glue/runtime/dylinx-runtime-init.c", "w") as rt_code:
+            code = "#include \"../dylinx-glue.h\"\n"
+            code = code + "extern void retrieve_native_symbol();\n"
+            for cu in init_cu:
+                code = code + f"extern void __dylinx_cu_init_{cu}_();\n"
+            code = code + "void __dylinx_global_mtx_init_() {\n"
+            code = code + "\tretrieve_native_symbol();\n"
+            for cu in init_cu:
+                code = code + "\t__dylinx_cu_init_{}_();\n".format(cu)
+            code = code + "}\n"
+            rt_code.write(code)
         cmd = f"""
             clang -fPIC -c {self.home_path}/src/glue/runtime/dylinx-runtime-init.c -o {self.home_path}/build/lib/dylinx-runtime-init.o;
             cd {self.home_path}/build/lib;
@@ -56,6 +83,16 @@ class NaiveSubject:
         """
         with subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True) as proc:
             logging.debug(proc.stdout.read().decode("utf-8"))
+
+    def filter_out_extern(self, entities):
+        instance = list(filter(lambda e: e["modification_type"] != "EXTERN_VAR_SYMBOL" and e["modification_type"] != "EXTERN_ARR_SYMBOL", entities))
+        self.extern_mapping = {}
+        for i in instance:
+            self.extern_mapping[i["id"]] = []
+            for e in entities:
+                if e["modification_type"] == "EXTERN_VAR_SYMBOL" or e["modification_type"] == "EXTERN_ARR_SYMBOL":
+                    self.extern_mapping[i].append(e)
+        return instance
 
     def inject_symbol(self):
         with subprocess.Popen(args=[self.executable, self.cc_path, f"{self.out_dir}/dylinx-insertion.yaml"], stdout=subprocess.PIPE) as proc:
@@ -75,19 +112,21 @@ class NaiveSubject:
         header_end = "\n#endif // __DYLINX_ITERATE_LOCK_COMB__"
 
         comb = self.permutation[n_comb]
-        current_iter = []
-        for i, c in enumerate(comb):
-            current_iter.append(f"#define DYLINX_LOCK_TYPE_{i} dylinx_{c.lower()}lock_t")
-            current_iter.append(f"#define DYLINX_LOCK_INIT_{i} DYLINX_{c}_INITIALIZER")
+        macro_defs = []
+        for c in comb:
+            print(c[0])
+            self.init_mapping.get(
+                self.entities[c[1]]["modification_type"], lambda t, e, content: None
+            )(c[0], self.entities[c[1]], macro_defs)
         with open(f"{self.home_path}/src/glue/runtime/dylinx-runtime-config.h", "w") as rt_config:
-            content = '\n'.join(current_iter)
+            content = '\n'.join(macro_defs)
             rt_config.write(f"{header_start}\n{content}\n{header_end}")
+        sys.exit()
         os.chdir(str(pathlib.PurePath(self.cc_path).parent))
         os.environ["C_INCLUDE_PATH"] = self.home_path
         os.environ["LD_LIBRARY_PATH"] = f"{self.home_path}/build/lib"
         with subprocess.Popen(self.build_inst, stdout=subprocess.PIPE, shell=True) as proc:
             logging.debug(proc.stdout.read().decode("utf-8"))
-        self.execute()
         return comb
 
     def execute(self):

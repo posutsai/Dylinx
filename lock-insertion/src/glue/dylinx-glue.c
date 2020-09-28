@@ -1,8 +1,8 @@
 // Include all of the lock definition in lock directory.
+#include "dylinx-glue.h"
 #include "lock/ttas-lock.h"
 #include "lock/backoff-lock.h"
 #include "lock/pthreadmtx-lock.h"
-#include "dylinx-glue.h"
 #include <errno.h>
 #include <string.h>
 
@@ -21,6 +21,60 @@
 Current number of available lock types isn't enough. Please reset                                           \
 LOCK_TYPE_CNT macro and corresponding macro definition.
 #endif
+
+#define CHECK_LOCATE_SYMBOL(fptr, symbol) do {                                                              \
+  if (!fptr) {                                                                                              \
+    printf("Error happens while trying to locate %s: %s\n", #symbol, dlerror());                            \
+    exit(-1);                                                                                               \
+  }                                                                                                         \
+} while(0)
+
+void retrieve_native_symbol() {
+  native_mutex_init = (int (*)(pthread_mutex_t *, pthread_mutexattr_t *))dlsym(RTLD_NEXT, "pthread_mutex_init");
+  CHECK_LOCATE_SYMBOL(native_mutex_init, pthread_mutex_init);
+  native_mutex_lock = (int (*)(pthread_mutex_t *))dlsym(RTLD_NEXT, "pthread_mutex_lock");
+  CHECK_LOCATE_SYMBOL(native_mutex_lock, pthread_mutex_lock);
+  native_mutex_unlock = (int (*)(pthread_mutex_t *))dlsym(RTLD_NEXT, "pthread_mutex_unlock");
+  CHECK_LOCATE_SYMBOL(native_mutex_unlock, pthread_mutex_unlock);
+  native_mutex_destroy = (int (*)(pthread_mutex_t *))dlsym(RTLD_NEXT, "pthread_mutex_destroy");
+  CHECK_LOCATE_SYMBOL(native_mutex_destroy, pthread_mutex_destroy);
+  native_mutex_trylock = (int (*)(pthread_mutex_t *))dlsym(RTLD_NEXT, "pthread_mutex_trylock");
+  CHECK_LOCATE_SYMBOL(native_mutex_trylock, pthread_mutex_trylock);
+  native_cond_wait = (int (*)(pthread_cond_t *, pthread_mutex_t *))dlsym(RTLD_NEXT, "pthread_cond_wait");
+  CHECK_LOCATE_SYMBOL(native_cond_wait, pthread_cond_wait);
+  native_cond_timedwait = (int (*)(pthread_cond_t *, pthread_mutex_t *, const struct timespec *))dlsym(RTLD_NEXT, "pthread_cond_timedwait");
+  CHECK_LOCATE_SYMBOL(native_cond_timedwait, pthread_cond_timedwait);
+}
+
+// {{{ forwarding function call to native interface
+int pthread_mutex_init_original(pthread_mutex_t *mtx, const pthread_mutexattr_t *attr) {
+    return native_mutex_init(mtx, attr);
+}
+
+int pthread_mutex_lock_original(pthread_mutex_t *mtx) {
+    return native_mutex_lock(mtx);
+}
+
+int pthread_mutex_unlock_original(pthread_mutex_t *mtx) {
+    return native_mutex_unlock(mtx);
+}
+
+int pthread_mutex_destroy_original(pthread_mutex_t *mtx) {
+    return native_mutex_destroy(mtx);
+}
+
+int pthread_mutex_trylock_original(pthread_mutex_t *mtx) {
+    return native_mutex_trylock(mtx);
+}
+
+int pthread_cond_wait_original(pthread_cond_t *cond, pthread_mutex_t *mtx) {
+    return native_cond_wait(cond, mtx);
+}
+
+int pthread_cond_timedwait_original(pthread_cond_t *cond, pthread_mutex_t *mtx, const struct timespec *time) {
+    return native_cond_timedwait(cond, mtx, time);
+}
+// }}}
 
 int dylinx_error_var_init(void *lock, const pthread_mutexattr_t *attr, char *file, char *var_name, int line) {
   char error_msg[1000];
@@ -89,7 +143,7 @@ int dlx_untrack_arr_init(dlx_generic_lock_t *lock, uint32_t num, char *var_name,
   return 0;
 }
 
-int dylinx_error_enable(void *lock) {
+int dlx_error_enable(void *lock) {
   HANDLING_ERROR(
     "Untrackable lock is trying to enable. Possible cause is"
     "_Generic function falls into \'default\' option."
@@ -97,12 +151,12 @@ int dylinx_error_enable(void *lock) {
   return -1;
 }
 
-int dylinx_forward_enable(void *lock) {
+int dlx_forward_enable(void *lock) {
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   return mtx->methods->lock_fptr(mtx->lock_obj);
 }
 
-int dylinx_error_disable(void *lock) {
+int dlx_error_disable(void *lock) {
   HANDLING_ERROR(
     "Untrackable lock is trying to unlock. Possible cause is"
     "_Generic function falls into \'default\' option."
@@ -110,12 +164,12 @@ int dylinx_error_disable(void *lock) {
   return -1;
 }
 
-int dylinx_forward_disable(void *lock) {
+int dlx_forward_disable(void *lock) {
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   return mtx->methods->unlock_fptr(mtx->lock_obj);
 }
 
-int dylinx_error_destroy(void *lock) {
+int dlx_error_destroy(void *lock) {
   HANDLING_ERROR(
     "Untrackable lock is trying to destroy. Possible cause is"
     "_Generic function falls into \'default\' option."
@@ -123,12 +177,12 @@ int dylinx_error_destroy(void *lock) {
   return -1;
 }
 
-int dylinx_forward_destroy(void *lock) {
+int dlx_forward_destroy(void *lock) {
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   return mtx->methods->destroy_fptr(mtx->lock_obj);
 }
 
-int dylinx_error_cond_wait(pthread_cond_t *cond, void *lock) {
+int dlx_error_cond_wait(pthread_cond_t *cond, void *lock) {
   HANDLING_ERROR(
     "Untrackable lock is trying to wait for condtion variable."
     "Possible cause is _Generic function falls into \'default\'"
@@ -137,12 +191,12 @@ int dylinx_error_cond_wait(pthread_cond_t *cond, void *lock) {
   return -1;
 }
 
-int dylinx_forward_cond_wait(pthread_cond_t *cond, void *lock) {
+int dlx_forward_cond_wait(pthread_cond_t *cond, void *lock) {
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   return mtx->methods->cond_timedwait_fptr(cond, mtx->lock_obj, 0);
 }
 
-int dylinx_error_cond_timedwait(pthread_cond_t *cond, void *lock, const struct timespec *time) {
+int dlx_error_cond_timedwait(pthread_cond_t *cond, void *lock, const struct timespec *time) {
   HANDLING_ERROR(
     "Untrackable lock is trying to wait for condtion variable."
     "Possible cause is _Generic function falls into \'default\'"
@@ -151,7 +205,7 @@ int dylinx_error_cond_timedwait(pthread_cond_t *cond, void *lock, const struct t
   return -1;
 }
 
-int dylinx_forward_cond_timedwait(pthread_cond_t *cond, void *lock, const struct timespec *time) {
+int dlx_forward_cond_timedwait(pthread_cond_t *cond, void *lock, const struct timespec *time) {
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   return mtx->methods->cond_timedwait_fptr(cond, mtx->lock_obj, time);
 }
