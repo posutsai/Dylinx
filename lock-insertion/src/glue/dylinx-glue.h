@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <time.h>
+
 #ifndef __DYLINX_REPLACE_PTHREAD_NATIVE__
 #define __DYLINX_REPLACE_PTHREAD_NATIVE__
 #define pthread_mutex_init pthread_mutex_init_original
@@ -32,6 +33,8 @@
 
 #define ALLOWED_LOCK_TYPE pthreadmtx, ttas, backoff
 #define LOCK_TYPE_LIMIT 10
+#define DYLINX_LOCK_TO_TYPE(lock) dlx_ ## lock ## _t
+#define DYLINX_LOCK_TO_INIT_METHOD
 
 #define FE_0(WHAT)
 #define FE_1(WHAT, X) WHAT(X)
@@ -104,6 +107,7 @@ static int (*native_cond_timedwait)(pthread_cond_t *, pthread_mutex_t *, const s
     uint32_t unit,                                                                                             \
     uint32_t *offsets,                                                                                         \
     uint32_t n_offset,                                                                                         \
+    void ** init_funcs,                                                                                        \
     char *file,                                                                                                \
     int line                                                                                                   \
   );                                                                                                           \
@@ -125,7 +129,8 @@ int dlx_untrack_var_init(dlx_generic_lock_t *, const pthread_mutexattr_t *, char
 int dlx_untrack_arr_init(dlx_generic_lock_t *, uint32_t, char *var_name, char *file, int line);
 int dlx_error_var_init(void *, const pthread_mutexattr_t *, char *var_name, char *file, int line);
 int dlx_error_arr_init(void *, uint32_t, char *var_name, char *file, int line);
-int dlx_error_obj_init(uint32_t, uint32_t, uint32_t *, uint32_t, char *, int);
+void *dlx_error_obj_init(uint32_t, uint32_t, uint32_t *, uint32_t, void **, char *, int);
+void *dlx_struct_obj_init(uint32_t, uint32_t, uint32_t *, uint32_t, void **, char *, int);
 
 int dlx_error_enable(void *);
 int dlx_error_disable(void *);
@@ -140,6 +145,10 @@ int dlx_forward_trylock(void *);
 int dlx_forward_cond_wait(pthread_cond_t *, void *);
 int dlx_forward_cond_timedwait(pthread_cond_t *, void *, const struct timespec *);
 
+typedef struct UserDefStruct {
+  void *dummy;
+} user_def_struct_t;
+
 //  Direct call by user
 //  ----------------------------------------------------------------------------
 //  Since we force mutex to get initialized when the memory is allocated,
@@ -153,15 +162,16 @@ int dlx_forward_cond_timedwait(pthread_cond_t *, void *, const struct timespec *
 #define __dylinx_member_init_(entity, attr) _Generic((entity),                                                 \
   DLX_GENERIC_VAR_INIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
   dlx_generic_lock_t *: dlx_untrack_var_init,                                                                  \
-  default: dlx_error_var_init                                                                                      \
+  default: dlx_error_var_init                                                                                  \
 )(entity, attr, #entity, __FILE__, __LINE__)
 
 #define DLX_GENERIC_OBJ_INIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_ ## ltype ## _obj_init,
 #define DLX_GENERIC_OBJ_INIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_OBJ_INIT_TYPE_REDIRECT, __VA_ARGS__)
-#define __dylinx_object_init_(cnt, unit, offsets, n_offset, ltype) _Generic((ltype),                           \
+#define __dylinx_object_init_(cnt, unit, offsets, n_offset, ltype, init_funcs) _Generic((ltype),               \
   DLX_GENERIC_OBJ_INIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
+  user_def_struct_t *: dlx_struct_obj_init,                                                                                 \
   default: dlx_error_obj_init                                                                                  \
-)(cnt, unit, offsets, n_offset,  __FILE__, __LINE__)
+)(cnt, unit, offsets, n_offset, init_funcs,  __FILE__, __LINE__)
 
 #define DLX_GENERIC_ARR_INIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_ ## ltype ## _arr_init,
 #define DLX_GENERIC_ARR_INIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_ARR_INIT_TYPE_REDIRECT, __VA_ARGS__)

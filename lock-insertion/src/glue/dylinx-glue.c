@@ -76,12 +76,12 @@ int pthread_cond_timedwait_original(pthread_cond_t *cond, pthread_mutex_t *mtx, 
 }
 // }}}
 //
-int dlx_error_obj_init(uint32_t cnt, uint32_t unit, uint32_t *offsets, uint32_t n_offset, char *file, int line) {
+void *dlx_error_obj_init(uint32_t cnt, uint32_t unit, uint32_t *offsets, uint32_t n_offset, void **init_funcs, char *file, int line) {
   char error_msg[1000];
   sprintf(
     error_msg,
-    "Untrackable array of locks are trying to init. Possible"
-    "cause is _Generic function falls into \'default\' option."
+    "Untrackable memory object lock are trying to init. Possible\n"
+    "cause is _Generic function falls into \'default\' option.\n"
     "According to source code, it happens near %s L%d",
     file, line
   );
@@ -93,8 +93,8 @@ int dlx_error_var_init(void *lock, const pthread_mutexattr_t *attr, char *file, 
   char error_msg[1000];
   sprintf(
     error_msg,
-    "Untrackable array of locks are trying to init. Possible"
-    "cause is _Generic function falls into \'default\' option."
+    "Untrackable variable of locks are trying to init. Possible\n"
+    "cause is _Generic function falls into \'default\' option.\n"
     "According to source code, it happens near %s L%d [%s]",
     file, line, var_name
   );
@@ -223,6 +223,22 @@ int dlx_forward_cond_timedwait(pthread_cond_t *cond, void *lock, const struct ti
   return mtx->methods->cond_timedwait_fptr(cond, mtx->lock_obj, time);
 }
 
+void *dlx_struct_obj_init(uint32_t cnt, uint32_t unit, uint32_t *offsets, uint32_t n_offset, void **init_funcs, char *file, int line) {
+  char *object = calloc(cnt, unit);
+  if (object) {
+    for (uint32_t c = 0; c < cnt; c++) {
+      for (uint32_t n = 0; n < n_offset; n++) {
+        dlx_generic_lock_t *lock = object + c * unit + offsets[n];
+        int (*init_fptr)(dlx_generic_lock_t *, pthread_mutexattr_t *, char *, char *, int);
+        init_fptr = init_funcs[n];
+        init_fptr(lock, NULL, "forward_from_obj_init", file, line);
+      }
+    }
+    return object;
+  }
+  return NULL;
+}
+
 // Serve every dispatched initialization function call, including
 // normal variable, array and pointer with malloc-like function
 // call.
@@ -256,14 +272,14 @@ int dlx_ ## ltype ## _arr_init(                                                 
   for (int i = 0; i < len; i++) {                                                                             \
     dlx_generic_lock_t *gen_lock = (dlx_generic_lock_t *)head + i;                                            \
     gen_lock->methods = calloc(1, sizeof(dlx_injected_interface_t));                                          \
-    gen_lock->methods->init_fptr = ltype ## _init;                                                             \
-    gen_lock->methods->lock_fptr = ltype ## _lock;                                                             \
-    gen_lock->methods->trylock_fptr = ltype ## _trylock;                                                       \
-    gen_lock->methods->unlock_fptr = ltype ## _unlock;                                                         \
-    gen_lock->methods->destroy_fptr = ltype ## _destroy;                                                       \
-    gen_lock->methods->cond_timedwait_fptr = ltype ## _cond_timedwait;                                         \
-    gen_lock->check_code = 0x32CB00B5;                                                                \
-    if (!gen_lock->methods || gen_lock->methods->init_fptr(&gen_lock->lock_obj, NULL)) {                       \
+    gen_lock->methods->init_fptr = ltype ## _init;                                                            \
+    gen_lock->methods->lock_fptr = ltype ## _lock;                                                            \
+    gen_lock->methods->trylock_fptr = ltype ## _trylock;                                                      \
+    gen_lock->methods->unlock_fptr = ltype ## _unlock;                                                        \
+    gen_lock->methods->destroy_fptr = ltype ## _destroy;                                                      \
+    gen_lock->methods->cond_timedwait_fptr = ltype ## _cond_timedwait;                                        \
+    gen_lock->check_code = 0x32CB00B5;                                                                        \
+    if (!gen_lock->methods || gen_lock->methods->init_fptr(&gen_lock->lock_obj, NULL)) {                      \
       printf("Error happens while initializing lock array %s in %s L%4d\n", var_name, file, line);            \
       return -1;                                                                                              \
     }                                                                                                         \
@@ -276,28 +292,13 @@ void *dlx_ ## ltype ## _obj_init(                                               
   uint32_t unit,                                                                                              \
   uint32_t *offsets,                                                                                          \
   uint32_t n_offset,                                                                                          \
+  void ** init_funcs,                                                                                         \
   char *file,                                                                                                 \
   int line                                                                                                    \
   ) {                                                                                                         \
-  char *object = calloc(cnt, unit);\
-  if (object) {                                                                     \
-    for (uint32_t c = 0; c < cnt; c++) {                                                                      \
-      for (uint32_t n = 0; n < n_offset; n++) {                                                               \
-        dlx_generic_lock_t *lock = object + c * unit + offsets[n];                                            \
-        lock->methods = calloc(1, sizeof(dlx_injected_interface_t));                                          \
-        lock->methods->init_fptr = ltype ## _init;                                                             \
-        lock->methods->lock_fptr = ltype ## _lock;                                                             \
-        lock->methods->trylock_fptr = ltype ## _trylock;                                                       \
-        lock->methods->unlock_fptr = ltype ## _unlock;                                                         \
-        lock->methods->destroy_fptr = ltype ## _destroy;                                                       \
-        lock->methods->cond_timedwait_fptr = ltype ## _cond_timedwait;                                         \
-        lock->check_code = 0x32CB00B5;                                                                \
-        if ((!lock->methods || lock->methods->init_fptr(&lock->lock_obj, NULL))) {                         \
-          printf("Error happens while initializing memory allocated object in %s L%4d\n", file, line);        \
-          return NULL;                                                                                        \
-        }                                                                                                     \
-      }                                                                                                       \
-    }                                                                                                         \
+  char *object = calloc(cnt, unit);                                                                           \
+  if (object) {                                                                                               \
+    dlx_ ## ltype ## _var_init(object, NULL, "forward_from_obj_init", file, line);                          \
     return object;                                                                                            \
   }                                                                                                           \
   return NULL;                                                                                                \

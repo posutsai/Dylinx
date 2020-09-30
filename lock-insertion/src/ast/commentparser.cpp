@@ -100,21 +100,36 @@ const Token *move2n_token(SourceLocation loc, uint32_t n, SourceManager& sm, con
   return token;
 }
 
-void traverse_init_fields_with_offset(const RecordDecl *recr, std::vector<uint64_t>& init_offsets, uint64_t cur_offset, ASTContext& ctx) {
+void traverse_init_fields_with_offset(
+  const RecordDecl *recr,
+  std::vector<std::tuple<uint64_t, std::string, uint32_t, uint32_t>>& init_params,
+  uint64_t cur_offset,
+  ASTContext& ctx)
+{
   const ASTRecordLayout& layout = ctx.getASTRecordLayout(recr);
+  SourceManager& sm = ctx.getSourceManager();
   for (auto iter = recr->field_begin(); iter != recr->field_end(); iter++) {
     const clang::Type *t = iter->getType().getTypePtr();
     std::string type_name = t->getCanonicalTypeInternal().getAsString();
     if (t->isStructureType() && type_name != "pthread_mutex_t") {
       traverse_init_fields_with_offset(
         t->getAsStructureType()->getDecl(),
-        init_offsets,
+        init_params,
         cur_offset + layout.getFieldOffset(iter->getFieldIndex()),
         ctx
       );
     }
     else if (type_name == "pthread_mutex_t") {
-      init_offsets.push_back(cur_offset + layout.getFieldOffset(iter->getFieldIndex()));
+      SourceLocation begin_loc = iter->getBeginLoc();
+      const FileEntry *fentry = sm.getFileEntryForID(sm.getFileID(begin_loc));
+      init_params.push_back(
+        std::make_tuple(
+          cur_offset + layout.getFieldOffset(iter->getFieldIndex()),
+          iter->getNameAsString(),
+          fentry->getUID(),
+          sm.getSpellingLineNumber(begin_loc)
+        )
+      );
     } else {
       continue;
     }
@@ -267,7 +282,7 @@ public:
     }
 
     if (const UnaryExprOrTypeTraitExpr *sizeof_expr = result.Nodes.getNodeAs<UnaryExprOrTypeTraitExpr>("sizeofExpr")) {
-      std::vector<uint64_t> init_offsets;
+      std::vector<std::tuple<uint64_t, std::string, uint32_t, uint32_t>> init_params;
       if (arg_type.getAsString() == "pthread_mutex_t") {
         Dylinx::Instance().rw_ptr->ReplaceText(
           SourceRange(
@@ -283,22 +298,27 @@ public:
         uint64_t cur_offset = 0; // offset unit is bit instead of byte.
         traverse_init_fields_with_offset(
           arg_type->getUnqualifiedDesugaredType()->getAsRecordDecl(),
-          init_offsets, cur_offset, *result.Context
+          init_params, cur_offset, *result.Context
         );
-        if (!init_offsets.size())
+        if (!init_params.size())
           return;
         meta["modification_type"] = STRUCT_MEM_ALLOCATION;
       }
 
       if (const CallExpr *call_expr = result.Nodes.getNodeAs<CallExpr>("alloc_call")) {
         // Deal with compound literal (3rd argument)
-        std::string comp_liter = "(uint32_t []) {";
-        for (auto it = init_offsets.begin(); it != init_offsets.end(); it++) {
+        std::string comp_liter = "((uint32_t []) {";
+        for (auto it = init_params.begin(); it != init_params.end(); it++) {
           char format[50];
-          sprintf(format, " %lu%s", (*it) / 8, it == init_offsets.end() - 1? " ": ",");
+          sprintf(format, " %lu%s", std::get<0>(*it) / 8, it == init_params.end() - 1? " ": ",");
           comp_liter = comp_liter + std::string(format);
+          YAML::Node member_info;
+          member_info["field_name"] = std::get<1>(*it);
+          member_info["file_uid"] = std::get<2>(*it);
+          member_info["line"] = std::get<3>(*it);
+          meta["member_info"].push_back(member_info);
         }
-        comp_liter = comp_liter + std::string("}");
+        comp_liter = comp_liter + std::string("})");
 
         // Deal with first two arguments
         char bites_args[300];
@@ -342,10 +362,11 @@ public:
         char replace_expr[300];
         sprintf(
           replace_expr,
-          "__dylinx_object_init_(%s, %s, %u, ((DYLINX_LOCK_TYPE_%d *)0));",
+          "__dylinx_object_init_(%s, %s, %u, ((DYLINX_LOCK_TYPE_%d *)0), DYLINX_LOCK_INIT_%d);",
           bites_args,
-          init_offsets.size()? comp_liter.c_str(): "NULL",
-          init_offsets.size(),
+          init_params.size()? comp_liter.c_str(): "NULL",
+          init_params.size(),
+          Dylinx::Instance().lock_i,
           Dylinx::Instance().lock_i
         );
         Dylinx::Instance().rw_ptr->ReplaceText(
@@ -501,16 +522,18 @@ public:
 #endif
       if (sm.isInSystemHeader(fd->getBeginLoc()))
         return;
+      YAML::Node decl_loc;
       SourceLocation begin_loc = fd->getBeginLoc();
       FileID src_id = sm.getFileID(begin_loc);
-      fs::path src_path = sm.getFileEntryForID( sm.getFileID(begin_loc))->getName().str();
+      const FileEntry *fentry = sm.getFileEntryForID(src_id);
+      decl_loc["file_uid"] = fentry->getUID();
+      fs::path src_path = fentry->getName().str();
       EntityID uid = std::make_tuple(
         src_path,
         sm.getSpellingLineNumber(begin_loc),
         sm.getSpellingColumnNumber(begin_loc)
       );
       std::string recr_name = fd->getParent()->getNameAsString();
-      YAML::Node decl_loc;
       if (recr_name.length() == 0)
         decl_loc["record_name"] = "0_anonymous_0";
       else
@@ -523,8 +546,9 @@ public:
         SourceRange(fd->getTypeSpecStartLoc(), fd->getTypeSpecEndLoc()),
         format
       );
-      if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(fd))
+      if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(fd)) {
         decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
+      }
       decl_loc["modification_type"] = FIELD_INSERT;
       save2metas(uid, decl_loc);
       save2altered_list(src_id, sm);

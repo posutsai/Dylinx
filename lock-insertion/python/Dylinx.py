@@ -9,7 +9,9 @@ import pathlib
 from flask import request, jsonify, Blueprint
 import requests
 
-def init_wo_callexpr(ltype, entity, content):
+def init_wo_callexpr(i, id2type, entities, content):
+    ltype = id2type[i]
+    entity = entities[i]
     content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_{ltype.lower()}_t")
     if entity.get("define_init", False):
         content.append(
@@ -17,7 +19,39 @@ def init_wo_callexpr(ltype, entity, content):
             f"{{ malloc(sizeof(dlx_{ltype.lower()}_t)), 0x32CB00B5, {entity['id']}, 0, malloc(sizeof(dlx_injected_interface_t)), {{0}} }}"
         )
 
-def replace_type(ltype, entity, content):
+def replace_type(i, id2type, entities, content):
+    ltype = id2type[i]
+    entity = entities[i]
+    content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_{ltype.lower()}_t")
+    if entity["modification_type"] == "MUTEX_MEM_ALLOCATION":
+        content.append(f"#define DYLINX_LOCK_INIT_{entity['id']} NULL")
+
+def define_obj_macro(i, id2type, entities, content):
+
+    def locate_field_decl(name, f_uid, line):
+        for e in entities:
+            if e["modification_type"] == "FIELD_INSERT" and e["field_name"] == name and e["file_uid"] == f_uid and e["line"] == line:
+                return e
+
+    entity = entities[i]
+    content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} user_def_struct_t")
+    init_methods = []
+    for m in entity["member_info"]:
+        decl = locate_field_decl(m["field_name"], m["file_uid"], m["line"])
+        field_ltype = id2type[decl["id"]]
+        init_methods.append(f"dlx_{field_ltype.lower()}_var_init")
+    init_methods = "(void *[]) { " + ",".join(init_methods) + "}"
+    content.append(f"#define DYLINX_LOCK_INIT_{entity['id']} {init_methods}")
+
+def extern_symbol_mapping(i, id2type, entities, content):
+    def locate_var_decl(name):
+        for e in entities:
+            if (e["modification_type"] == "VARIABLE" or e["modification_type"] == "ARRAY") and e["name"] == name:
+                return e
+        raise ValueError(f"Trying to mapping an extern symbol {entities[i]}. However not the valid vardecl isn't found")
+    entity = entities[i]
+    valid = locate_var_decl(entity["name"])
+    ltype = id2type[valid["id"]]
     content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_{ltype.lower()}_t")
 
 class NaiveSubject:
@@ -27,6 +61,9 @@ class NaiveSubject:
             "ARRAY": replace_type,
             "FIELD_INSERT": replace_type,
             "MUTEX_MEM_ALLOCATION": replace_type,
+            "EXTERN_VAR_SYMBOL": extern_symbol_mapping,
+            "EXTERN_ARR_SYMBOL": extern_symbol_mapping,
+            "STRUCT_MEM_ALLOCATION": define_obj_macro
         }
         self.logger = logging.getLogger("dylinx_logger")
         self.logger.setLevel(verbose)
@@ -43,16 +80,17 @@ class NaiveSubject:
         with open(f"{self.out_dir}/dylinx-insertion.yaml", "r") as stream:
             meta = list(yaml.load_all(stream, Loader=yaml.FullLoader))[0]
         self.permutation = []
-        injection = list(self.filter_out_extern(meta["LockEntity"]))
-        for m in injection:
+        validity = list(self.filter_valid(meta["LockEntity"]))
+        for m in validity:
             init = [("PTHREADMTX", m["id"])] if include_posix else []
-            comb = set([*init, *m.get("lock_combination", [])])
+            parsed_comb = m.get("lock_combination", [])
+            parsed_comb = [] if parsed_comb is None else parsed_comb
+            comb = set([*init, *parsed_comb])
             if len(comb) == 0:
                 raise ValueError("lock_combination shouldn't be empty")
             self.permutation.append(comb)
 
         self.permutation = list(itertools.product(*self.permutation))
-        print(self.permutation)
 
         # Generate content for dylinx-runtime-init.c
         init_cu = set()
@@ -80,15 +118,15 @@ class NaiveSubject:
         with subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True) as proc:
             logging.debug(proc.stdout.read().decode("utf-8"))
 
-    def filter_out_extern(self, entities):
-        instance = list(filter(lambda e: e["modification_type"] != "EXTERN_VAR_SYMBOL" and e["modification_type"] != "EXTERN_ARR_SYMBOL", entities))
-        self.extern_mapping = {}
-        for i in instance:
-            self.extern_mapping[i["id"]] = []
-            for e in entities:
-                if e["modification_type"] == "EXTERN_VAR_SYMBOL" or e["modification_type"] == "EXTERN_ARR_SYMBOL":
-                    self.extern_mapping[i].append(e)
-        return instance
+    def filter_valid(self, entities):
+        def valid(e):
+            return \
+                e["modification_type"] != "EXTERN_VAR_SYMBOL" and \
+                e["modification_type"] != "EXTERN_ARR_SYMBOL" and \
+                e["modification_type"] != "STRUCT_MEM_ALLOCATION"
+
+        validity = list(filter(valid, entities))
+        return validity
 
     def inject_symbol(self):
         with subprocess.Popen(args=[self.executable, self.cc_path, f"{self.out_dir}/dylinx-insertion.yaml"], stdout=subprocess.PIPE) as proc:
@@ -108,12 +146,10 @@ class NaiveSubject:
         header_end = "\n#endif // __DYLINX_ITERATE_LOCK_COMB__"
 
         comb = self.permutation[n_comb]
+        id2type = { c[1]: c[0] for c in comb }
         macro_defs = []
-        for c in comb:
-            print(c[0])
-            self.init_mapping.get(
-                self.entities[c[1]]["modification_type"], lambda t, e, content: None
-            )(c[0], self.entities[c[1]], macro_defs)
+        for i, e in enumerate(self.entities):
+            self.init_mapping.get(e["modification_type"], lambda i, i2t, e, m: None)(i, id2type, self.entities, macro_defs)
         with open(f"{self.home_path}/src/glue/runtime/dylinx-runtime-config.h", "w") as rt_config:
             content = '\n'.join(macro_defs)
             rt_config.write(f"{header_start}\n{content}\n{header_end}")
