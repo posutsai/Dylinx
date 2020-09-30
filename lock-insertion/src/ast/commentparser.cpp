@@ -26,6 +26,7 @@
 #include <fstream>
 #include <cstdio>
 #include <cstdint>
+#include <cassert>
 #include <string>
 #include <cstring>
 #include <regex>
@@ -75,6 +76,7 @@ public:
   Rewriter *rw_ptr;
   std::set<EntityID> metas;
   std::set<FileID> cu_deps;
+  std::set<FileID> decorated_headers;
   std::map<std::string, std::string> cu_arrs;
   std::map<std::string, std::vector<std::string>> cu_recr;
   std::set<fs::path> altered_files;
@@ -83,6 +85,7 @@ public:
   uint32_t lock_i = 0;
   fs::path temp_dir;
   bool require_init;
+  FileID pthread_header;
 private:
   Dylinx() {};
   ~Dylinx() {};
@@ -161,6 +164,14 @@ void write_modified_file(fs::path file_path, FileID fid, SourceManager& sm) {
   std::error_code err;
   fs::path temp_file = Dylinx::Instance().temp_dir / file_path.filename();
   if (!fs::exists(temp_file)) {
+    raw_fd_ostream fstream(temp_file.string(), err);
+    Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
+  }
+  else if (
+      fid == Dylinx::Instance().pthread_header &&
+      Dylinx::Instance().decorated_headers.find(fid) == Dylinx::Instance().decorated_headers.end()) {
+    Dylinx::Instance().decorated_headers.insert(fid);
+    assert(fs::remove(temp_file));
     raw_fd_ostream fstream(temp_file.string(), err);
     Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
   }
@@ -870,7 +881,9 @@ public:
       fs::path pth = fentry->getName().str();
       const FileID file_id = sm.translateFile(fentry);
       if (pth.filename() == "pthread.h") {
+        SourceManager& sm = Context.getSourceManager();
         SourceLocation header = sm.getIncludeLoc(file_id);
+        Dylinx::Instance().pthread_header = sm.getFileID(header);
         uint32_t line = sm.getSpellingLineNumber(header);
         int32_t col = sm.getSpellingColumnNumber(header);
         Dylinx::Instance().rw_ptr->InsertTextAfter(
