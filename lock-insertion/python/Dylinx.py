@@ -39,7 +39,7 @@ def define_obj_macro(i, id2type, entities, content):
     for m in entity["member_info"]:
         decl = locate_field_decl(m["field_name"], m["file_uid"], m["line"])
         field_ltype = id2type[decl["id"]]
-        init_methods.append(f"dlx_{field_ltype.lower()}_var_init")
+        init_methods.append(f"(void *)dlx_{field_ltype.lower()}_var_init")
     init_methods = "(void *[]) { " + ",".join(init_methods) + "}"
     content.append(f"#define DYLINX_LOCK_INIT_{entity['id']} {init_methods}")
 
@@ -97,6 +97,7 @@ class NaiveSubject:
         for m in meta["LockEntity"]:
             if "extra_init" in m.keys():
                 init_cu.add(m["extra_init"])
+        self.extra_init_cu = init_cu
         self.entities = meta["LockEntity"]
         with open(f"{self.home_path}/src/glue/runtime/dylinx-runtime-init.c", "w") as rt_code:
             code = "#include \"../dylinx-glue.h\"\n"
@@ -143,11 +144,13 @@ class NaiveSubject:
             "#define __DYLINX_ITERATE_LOCK_COMB__\n"
             "void __dylinx_global_mtx_init_();\n"
         )
-        header_end = "\n#endif // __DYLINX_ITERATE_LOCK_COMB__"
+        header_end = "\n#endif // __DYLINX_ITERATE_LOCK_COMB__\n"
 
         comb = self.permutation[n_comb]
         id2type = { c[1]: c[0] for c in comb }
         macro_defs = []
+        for cu_id in self.extra_init_cu:
+            macro_defs.append(f"void __dylinx_cu_init_{cu_id}_(void);")
         for i, e in enumerate(self.entities):
             self.init_mapping.get(e["modification_type"], lambda i, i2t, e, m: None)(i, id2type, self.entities, macro_defs)
         with open(f"{self.home_path}/src/glue/runtime/dylinx-runtime-config.h", "w") as rt_config:
@@ -155,7 +158,7 @@ class NaiveSubject:
             rt_config.write(f"{header_start}\n{content}\n{header_end}")
         sys.exit()
         os.chdir(str(pathlib.PurePath(self.cc_path).parent))
-        os.environ["C_INCLUDE_PATH"] = self.home_path
+        os.environ["C_INCLUDE_PATH"] = ";".join([self.home_path, "/usr/local/lib/clang/10.0.0/include"])
         os.environ["LD_LIBRARY_PATH"] = f"{self.home_path}/build/lib"
         with subprocess.Popen(self.build_inst, stdout=subprocess.PIPE, shell=True) as proc:
             logging.debug(proc.stdout.read().decode("utf-8"))

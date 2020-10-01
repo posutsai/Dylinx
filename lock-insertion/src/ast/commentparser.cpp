@@ -1211,7 +1211,7 @@ public:
           global_initializer.append(init_mtx);
         }
       }
-      global_initializer.append("}");
+      global_initializer.append("}\n");
       Dylinx::Instance().rw_ptr->InsertText(
         end,
         global_initializer

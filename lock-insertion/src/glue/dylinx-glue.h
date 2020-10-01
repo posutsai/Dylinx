@@ -1,4 +1,6 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <dlfcn.h>
 #include <stdint.h>
 #include <string.h>
@@ -6,7 +8,6 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <time.h>
-
 #ifndef __DYLINX_REPLACE_PTHREAD_NATIVE__
 #define __DYLINX_REPLACE_PTHREAD_NATIVE__
 #define pthread_mutex_init pthread_mutex_init_original
@@ -30,6 +31,7 @@
 #ifndef __DYLINX_SYMBOL__
 #define __DYLINX_SYMBOL__
 #pragma clang diagnostic ignored "-Wincompatible-pointer-types"
+#pragma clang diagnostic ignored "-Wmacro-redefined"
 
 #define ALLOWED_LOCK_TYPE pthreadmtx, ttas, backoff
 #define LOCK_TYPE_LIMIT 10
@@ -119,8 +121,8 @@ static int (*native_cond_timedwait)(pthread_cond_t *, pthread_mutex_t *, const s
   int ltype ## _cond_timedwait(pthread_cond_t *, void *, const struct timespec *);
 
 DLX_LOCK_TEMPLATE_PROTOTYPE(ttas)
-DLX_LOCK_TEMPLATE_PROTOTYPE(backoff);
-DLX_LOCK_TEMPLATE_PROTOTYPE(pthreadmtx);
+DLX_LOCK_TEMPLATE_PROTOTYPE(backoff)
+DLX_LOCK_TEMPLATE_PROTOTYPE(pthreadmtx)
 
 #define DYLINX_DUMMY_INITIALIZER {NULL, 0, -1, {0}}
 
@@ -149,6 +151,7 @@ typedef struct UserDefStruct {
   void *dummy;
 } user_def_struct_t;
 
+
 //  Direct call by user
 //  ----------------------------------------------------------------------------
 //  Since we force mutex to get initialized when the memory is allocated,
@@ -160,6 +163,12 @@ typedef struct UserDefStruct {
 #define DLX_GENERIC_VAR_INIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_ ## ltype ## _var_init,
 #define DLX_GENERIC_VAR_INIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_VAR_INIT_TYPE_REDIRECT, __VA_ARGS__)
 #define __dylinx_member_init_(entity, attr) _Generic((entity),                                                 \
+  DLX_GENERIC_VAR_INIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
+  dlx_generic_lock_t *: dlx_untrack_var_init,                                                                  \
+  default: dlx_error_var_init                                                                                  \
+)(entity, attr, #entity, __FILE__, __LINE__)
+
+#define pthread_mutex_init(entity, attr) _Generic((entity),                                                    \
   DLX_GENERIC_VAR_INIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
   dlx_generic_lock_t *: dlx_untrack_var_init,                                                                  \
   default: dlx_error_var_init                                                                                  \
