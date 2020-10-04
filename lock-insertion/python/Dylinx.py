@@ -106,6 +106,7 @@ class NaiveSubject:
                 code = code + f"extern void __dylinx_cu_init_{cu}_();\n"
             code = code + "void __dylinx_global_mtx_init_() {\n"
             code = code + "\tretrieve_native_symbol();\n"
+            code = code + "\tassert(sizeof(dlx_generic_lock_t) == sizeof(pthread_mutex_t));\n"
             for cu in init_cu:
                 code = code + "\t__dylinx_cu_init_{}_();\n".format(cu)
             code = code + "}\n"

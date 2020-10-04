@@ -178,15 +178,37 @@ void write_modified_file(fs::path file_path, FileID fid, SourceManager& sm) {
 }
 
 // Chances are saving is failed since the uid may already exist.
-bool save2metas(EntityID uid, YAML::Node meta) {
-  if (!Dylinx::Instance().metas.insert(uid).second)
-    return false;
-  meta["file_name"] = std::get<0>(uid).string();
-  meta["line"] = std::get<1>(uid);
-  meta["id"] = Dylinx::Instance().lock_i;
-  Dylinx::Instance().lock_i++;
-  Dylinx::Instance().lock_decl["LockEntity"].push_back(meta);
-  return true;
+bool save2metas(EntityID uid, YAML::Node meta, FileID fid, SourceManager& sm) {
+  std::string file_name = std::get<0>(uid).string();
+  bool is_new = Dylinx::Instance().metas.insert(uid).second;
+  bool should_decorate = Dylinx::Instance().pthread_header == fid;
+  bool is_decorated = Dylinx::Instance().decorated_headers.find(fid) != Dylinx::Instance().decorated_headers.end();
+  if (is_new || (should_decorate && !is_decorated)) {
+    if (!is_new) {
+      YAML::Node entities = Dylinx::Instance().lock_decl["LockEntity"];
+      int i = 0;
+      for (YAML::const_iterator it = entities.begin(); it != entities.end(); it++, i++) {
+        const YAML::Node& entity = *it;
+        EntityID existing = std::make_tuple(
+          entity["file_name"].as<std::string>(),
+          entity["line"].as<uint32_t>(),
+          entity["column"].as<uint32_t>()
+        );
+        if (existing == uid) {
+          Dylinx::Instance().lock_decl["LockEntity"].remove(i);
+          break;
+        }
+      }
+    }
+    meta["file_name"] = file_name;
+    meta["line"] = std::get<1>(uid);
+    meta["column"] = std::get<2>(uid);
+    meta["id"] = Dylinx::Instance().lock_i;
+    Dylinx::Instance().lock_i++;
+    Dylinx::Instance().lock_decl["LockEntity"].push_back(meta);
+    return true;
+  }
+  return false;
 }
 
 bool save2altered_list(FileID src_id, SourceManager& sm) {
@@ -373,7 +395,7 @@ public:
         char replace_expr[300];
         sprintf(
           replace_expr,
-          "__dylinx_object_init_(%s, %s, %u, ((DYLINX_LOCK_TYPE_%d *)0), DYLINX_LOCK_INIT_%d);",
+          "__dylinx_object_init_(%s, %s, %lu, ((DYLINX_LOCK_TYPE_%d *)0), DYLINX_LOCK_INIT_%d);",
           bites_args,
           init_params.size()? comp_liter.c_str(): "NULL",
           init_params.size(),
@@ -387,7 +409,7 @@ public:
           ),
           replace_expr
         );
-        save2metas(uid, meta);
+        save2metas(uid, meta, src_id, sm);
         save2altered_list(src_id, sm);
       }
     }
@@ -449,7 +471,7 @@ public:
 
       if (d->getStorageClass() == StorageClass::SC_Extern) {
         alloca["modification_type"] = EXTERN_ARR_SYMBOL;
-        save2metas(uid, alloca);
+        save2metas(uid, alloca, src_id, sm);
         save2altered_list(src_id, sm);
         return;
       }
@@ -468,7 +490,7 @@ public:
         char init_mtx[200];
         sprintf(
           init_mtx,
-          "\t__dylinx_array_init_(&%s, %s);\n",
+          "\t__dylinx_array_init_(%s, %s);\n",
           d->getNameAsString().c_str(),
           size_src.c_str()
         );
@@ -477,7 +499,7 @@ public:
           init_mtx
         );
       }
-      save2metas(uid, alloca);
+      save2metas(uid, alloca, src_id, sm);
       save2altered_list(src_id, sm);
     }
   }
@@ -561,7 +583,7 @@ public:
         decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
       }
       decl_loc["modification_type"] = FIELD_INSERT;
-      save2metas(uid, decl_loc);
+      save2metas(uid, decl_loc, src_id, sm);
       save2altered_list(src_id, sm);
     }
   }
@@ -623,7 +645,7 @@ public:
           concat_init
         );
       }
-      save2metas(uid, meta);
+      save2metas(uid, meta, src_id, sm);
       save2altered_list(src_id, sm);
     }
     return;
@@ -770,7 +792,7 @@ public:
       if (!d->hasDefinition()) {
         meta["modification_type"] = EXTERN_VAR_SYMBOL;
         meta["name"] = var_name;
-        save2metas(cur_type, meta);
+        save2metas(cur_type, meta, src_id, sm);
         save2altered_list(src_id, sm);
         return;
       }
@@ -817,7 +839,7 @@ public:
       }
 
       meta["name"] = var_name;
-      save2metas(cur_type, meta);
+      save2metas(cur_type, meta, src_id, sm);
       save2altered_list(src_id, sm);
       pre_type = cur_type;
     }
@@ -1187,7 +1209,7 @@ public:
           if (entity["modification_type"].as<std::string>() == std::string(ARR_ALLOCA_TYPE)) {
             sprintf(
               init_mtx,
-              "\t__dylinx_array_init_(&%s, %s);\n",
+              "\t__dylinx_array_init_(%s, %s);\n",
               var_name.c_str(),
               Dylinx::Instance().cu_arrs[var_name].c_str()
             );

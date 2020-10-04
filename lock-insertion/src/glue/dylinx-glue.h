@@ -78,7 +78,7 @@ typedef struct __attribute__((packed)) GenericLock {
   int32_t type_id;
   uint32_t ins_id;
   dlx_injected_interface_t *methods;
-  char padding[sizeof(pthread_mutex_t) - 3 * sizeof(uint32_t) - sizeof(void *)];
+  char padding[sizeof(pthread_mutex_t) - 3 * sizeof(uint32_t) - 2 * sizeof(void *)];
 } dlx_generic_lock_t;
 
 static int (*native_mutex_init)(pthread_mutex_t *, pthread_mutexattr_t *);

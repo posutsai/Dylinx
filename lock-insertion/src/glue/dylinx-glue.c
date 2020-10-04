@@ -29,6 +29,7 @@ LOCK_TYPE_CNT macro and corresponding macro definition.
   }                                                                                                         \
 } while(0)
 
+// linked order should be concern
 void retrieve_native_symbol() {
   native_mutex_init = (int (*)(pthread_mutex_t *, pthread_mutexattr_t *))dlsym(RTLD_NEXT, "pthread_mutex_init");
   CHECK_LOCATE_SYMBOL(native_mutex_init, pthread_mutex_init);
@@ -103,12 +104,12 @@ int dlx_error_var_init(void *lock, const pthread_mutexattr_t *attr, char *file, 
 }
 
 int dlx_untrack_var_init(dlx_generic_lock_t *lock, const pthread_mutexattr_t *attr, char *file, char *var_name, int line) {
-#ifdef __DYLINX_DEBUG__
-  char log_msg[300];
-  printf("Untracked lock variable located in %s %s L%4d is initialized", file, var_name, line);
-#endif
   if (lock && lock->check_code == 0x32CB00B5);
     return 0;
+#ifdef __DYLINX_DEBUG__
+  char log_msg[300];
+  printf("Untracked lock variable located in %s %s L%4d is initialized\n", file, var_name, line);
+#endif
   // The untracked lock instance is initialized with pthreadmtx
   // by default.
   lock->methods = calloc(1, sizeof(dlx_injected_interface_t));
@@ -126,9 +127,9 @@ int dlx_error_arr_init(void *lock, uint32_t size, char *var_name, char *file, in
   char error_msg[1000];
   sprintf(
     error_msg,
-    "Untrackable array of locks are trying to init. Possible"
-    "cause is _Generic function falls into \'default\' option."
-    "According to source code, error of array %s happens near %s L%d",
+    "Untrackable array of locks are trying to init. Possible\n"
+    "cause is _Generic function falls into \'default\' option.\n"
+    "According to source code, error of array %s happens near %s L%d.",
     var_name, file, line
   );
   HANDLING_ERROR(error_msg);
@@ -158,8 +159,8 @@ int dlx_untrack_arr_init(dlx_generic_lock_t *lock, uint32_t num, char *var_name,
 
 int dlx_error_enable(void *lock) {
   HANDLING_ERROR(
-    "Untrackable lock is trying to enable. Possible cause is"
-    "_Generic function falls into \'default\' option."
+    "Untrackable lock is trying to enable. Possible cause is\n"
+    "_Generic function falls into \'default\' option.\n"
   );
   return -1;
 }
@@ -171,8 +172,8 @@ int dlx_forward_enable(void *lock) {
 
 int dlx_error_disable(void *lock) {
   HANDLING_ERROR(
-    "Untrackable lock is trying to unlock. Possible cause is"
-    "_Generic function falls into \'default\' option."
+    "Untrackable lock is trying to unlock. Possible cause is\n"
+    "_Generic function falls into \'default\' option.\n"
   );
   return -1;
 }
@@ -184,8 +185,8 @@ int dlx_forward_disable(void *lock) {
 
 int dlx_error_destroy(void *lock) {
   HANDLING_ERROR(
-    "Untrackable lock is trying to destroy. Possible cause is"
-    "_Generic function falls into \'default\' option."
+    "Untrackable lock is trying to destroy. Possible cause is\n"
+    "_Generic function falls into \'default\' option.\n"
   );
   return -1;
 }
@@ -197,8 +198,8 @@ int dlx_forward_destroy(void *lock) {
 
 int dlx_error_trylock(void *lock) {
   HANDLING_ERROR(
-    "Untrackable lock is trying to destroy. Possible cause is"
-    "_Generic function falls into \'default\' option."
+    "Untrackable lock is trying to destroy. Possible cause is\n"
+    "_Generic function falls into \'default\' option.\n"
   );
   return -1;
 }
@@ -210,8 +211,8 @@ int dlx_forward_trylock(void *lock) {
 
 int dlx_error_cond_wait(pthread_cond_t *cond, void *lock) {
   HANDLING_ERROR(
-    "Untrackable lock is trying to wait for condtion variable."
-    "Possible cause is _Generic function falls into \'default\'"
+    "Untrackable lock is trying to wait for condtion variable.\n"
+    "Possible cause is _Generic function falls into \'default\'\n"
     "option."
   );
   return -1;
@@ -224,8 +225,8 @@ int dlx_forward_cond_wait(pthread_cond_t *cond, void *lock) {
 
 int dlx_error_cond_timedwait(pthread_cond_t *cond, void *lock, const struct timespec *time) {
   HANDLING_ERROR(
-    "Untrackable lock is trying to wait for condtion variable."
-    "Possible cause is _Generic function falls into \'default\'"
+    "Untrackable lock is trying to wait for condtion variable.\n"
+    "Possible cause is _Generic function falls into \'default\'\n"
     "option."
   );
   return -1;
@@ -262,10 +263,8 @@ int dlx_ ## ltype ##_var_init(                                                  
   char *var_name, char *file, int line                                                                        \
   ) {                                                                                                         \
   dlx_generic_lock_t *gen_lock = (dlx_generic_lock_t *)lock;                                                  \
-  if (gen_lock && gen_lock->check_code == 0x32CB00B5) {                                                               \
-    printf("miss to initialize a lock named %s in %s L%d\n", var_name, file, line);                           \
+  if (gen_lock && gen_lock->check_code == 0x32CB00B5)                                                       \
     return 0;                                                                                                 \
-  }                                                                                                           \
   gen_lock->methods = calloc(1, sizeof(dlx_injected_interface_t));                                            \
   gen_lock->methods->init_fptr = ltype ## _init;                                                              \
   gen_lock->methods->lock_fptr = ltype ## _lock;                                                              \
@@ -313,9 +312,11 @@ void *dlx_ ## ltype ## _obj_init(                                               
   char *file,                                                                                                 \
   int line                                                                                                    \
   ) {                                                                                                         \
-  char *object = calloc(cnt, unit);                                                                           \
+  dlx_ ## ltype ## _t *object = calloc(cnt, unit);                                                            \
   if (object) {                                                                                               \
-    dlx_ ## ltype ## _var_init(object, NULL, "forward_from_obj_init", file, line);                            \
+    for (uint32_t i = 0; i < cnt; i++) {                                                                      \
+      dlx_ ## ltype ## _var_init(object + i, NULL, file, "forward_from_obj_init", line);                      \
+    }                                                                                                         \
     return object;                                                                                            \
   }                                                                                                           \
   return NULL;                                                                                                \
