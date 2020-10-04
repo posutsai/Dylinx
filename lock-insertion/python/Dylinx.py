@@ -29,7 +29,7 @@ def replace_type(i, id2type, entities, content):
 def define_obj_macro(i, id2type, entities, content):
 
     def locate_field_decl(name, f_uid, line):
-        for e in entities:
+        for i, e in entities.items():
             if e["modification_type"] == "FIELD_INSERT" and e["field_name"] == name and e["file_uid"] == f_uid and e["line"] == line:
                 return e
 
@@ -45,7 +45,7 @@ def define_obj_macro(i, id2type, entities, content):
 
 def extern_symbol_mapping(i, id2type, entities, content):
     def locate_var_decl(name):
-        for e in entities:
+        for i, e in entities.items():
             if (e["modification_type"] == "VARIABLE" or e["modification_type"] == "ARRAY") and e["name"] == name:
                 return e
         raise ValueError(f"Trying to mapping an extern symbol {entities[i]}. However not the valid vardecl isn't found")
@@ -98,7 +98,7 @@ class NaiveSubject:
             if "extra_init" in m.keys():
                 init_cu.add(m["extra_init"])
         self.extra_init_cu = init_cu
-        self.entities = meta["LockEntity"]
+        self.entities = { e["id"]: e for e in meta["LockEntity"] }
         with open(f"{self.home_path}/src/glue/runtime/dylinx-runtime-init.c", "w") as rt_code:
             code = "#include \"../dylinx-glue.h\"\n"
             code = code + "extern void retrieve_native_symbol();\n"
@@ -152,12 +152,11 @@ class NaiveSubject:
         macro_defs = []
         for cu_id in self.extra_init_cu:
             macro_defs.append(f"void __dylinx_cu_init_{cu_id}_(void);")
-        for i, e in enumerate(self.entities):
+        for i, e in self.entities.items():
             self.init_mapping.get(e["modification_type"], lambda i, i2t, e, m: None)(i, id2type, self.entities, macro_defs)
         with open(f"{self.home_path}/src/glue/runtime/dylinx-runtime-config.h", "w") as rt_config:
             content = '\n'.join(macro_defs)
             rt_config.write(f"{header_start}\n{content}\n{header_end}")
-        sys.exit()
         os.chdir(str(pathlib.PurePath(self.cc_path).parent))
         os.environ["C_INCLUDE_PATH"] = ";".join([self.home_path, "/usr/local/lib/clang/10.0.0/include"])
         os.environ["LD_LIBRARY_PATH"] = f"{self.home_path}/build/lib"

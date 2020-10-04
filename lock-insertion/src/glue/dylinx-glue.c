@@ -210,11 +210,13 @@ int dlx_forward_trylock(void *lock) {
 }
 
 int dlx_error_cond_wait(pthread_cond_t *cond, void *lock) {
-  HANDLING_ERROR(
-    "Untrackable lock is trying to wait for condtion variable.\n"
-    "Possible cause is _Generic function falls into \'default\'\n"
-    "option."
+  char error_msg[1000];
+  sprintf(
+    error_msg,
+    "Untrackable memory object lock is trying to wait for condition variable.\n"
+    "Possible cause is _Generic function falls into \'default\' option.\n"
   );
+  HANDLING_ERROR(error_msg);
   return -1;
 }
 
