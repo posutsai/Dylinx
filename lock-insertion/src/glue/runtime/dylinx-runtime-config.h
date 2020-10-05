@@ -1,4 +1,0 @@
-#ifndef __DYLINX_ITERATE_LOCK_COMB__
-#define __DYLINX_ITERATE_LOCK_COMB__
-#define DYLINX_LOCK_MACRO_0 dylinx_pthreadmtxlock_t
-#endif

@@ -70,6 +70,7 @@ class NaiveSubject:
         with open(config_path, "r") as yaml_file:
             conf = list(yaml.load_all(yaml_file, Loader=yaml.FullLoader))[0]
             self.cc_path = os.path.expandvars(conf["compile_commands"])
+            self.glue_dir = os.path.dirname(self.cc_path) + "/.dylinx"
             self.out_dir = os.path.expandvars(conf["output_directory"])
             self.build_inst = conf["instructions"][0]["build"]
             self.clean_inst = conf["instructions"][1]["clean"]
@@ -99,8 +100,8 @@ class NaiveSubject:
                 init_cu.add(m["extra_init"])
         self.extra_init_cu = init_cu
         self.entities = { e["id"]: e for e in meta["LockEntity"] }
-        with open(f"{self.home_path}/src/glue/runtime/dylinx-runtime-init.c", "w") as rt_code:
-            code = "#include \"../dylinx-glue.h\"\n"
+        with open(f"{self.glue_dir}/glue/dylinx-runtime-init.c", "w") as rt_code:
+            code = "#include \"dylinx-glue.h\"\n"
             code = code + "extern void retrieve_native_symbol();\n"
             for cu in init_cu:
                 code = code + f"extern void __dylinx_cu_init_{cu}_();\n"
@@ -112,10 +113,10 @@ class NaiveSubject:
             code = code + "}\n"
             rt_code.write(code)
         cmd = f"""
-            clang -fPIC -c {self.home_path}/src/glue/runtime/dylinx-runtime-init.c -o {self.home_path}/build/lib/dylinx-runtime-init.o;
-            cd {self.home_path}/build/lib;
-            clang -shared -o libdlx-init.so dylinx-runtime-init.o;
-            /bin/rm -f dylinx-runtime-init.o
+            cd {self.glue_dir}/glue;
+            clang -fPIC -c {self.glue_dir}/glue/dylinx-runtime-init.c -o {self.glue_dir}/lib/dylinx-runtime-init.o -I{self.home_path}/src/glue -I.;
+            clang -shared -o {self.glue_dir}/lib/libdlx-init.so {self.glue_dir}/lib/dylinx-runtime-init.o;
+            /bin/rm -f {self.glue_dir}/lib/dylinx-runtime-init.o
         """
         with subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True) as proc:
             logging.debug(proc.stdout.read().decode("utf-8"))
@@ -154,12 +155,12 @@ class NaiveSubject:
             macro_defs.append(f"void __dylinx_cu_init_{cu_id}_(void);")
         for i, e in self.entities.items():
             self.init_mapping.get(e["modification_type"], lambda i, i2t, e, m: None)(i, id2type, self.entities, macro_defs)
-        with open(f"{self.home_path}/src/glue/runtime/dylinx-runtime-config.h", "w") as rt_config:
+        with open(f"{self.glue_dir}/glue/dylinx-runtime-config.h", "w") as rt_config:
             content = '\n'.join(macro_defs)
             rt_config.write(f"{header_start}\n{content}\n{header_end}")
         os.chdir(str(pathlib.PurePath(self.cc_path).parent))
-        os.environ["C_INCLUDE_PATH"] = ";".join([self.home_path, "/usr/local/lib/clang/10.0.0/include"])
-        os.environ["LD_LIBRARY_PATH"] = f"{self.home_path}/build/lib"
+        os.environ["C_INCLUDE_PATH"] = ":".join([f"{self.home_path}/src/glue", "/usr/local/lib/clang/10.0.0/include", f"{self.glue_dir}/glue"])
+        os.environ["LD_LIBRARY_PATH"] = ":".join([f"{self.home_path}/build/lib", f"{self.glue_dir}/lib"])
         with subprocess.Popen(self.build_inst, stdout=subprocess.PIPE, shell=True) as proc:
             logging.debug(proc.stdout.read().decode("utf-8"))
         return comb

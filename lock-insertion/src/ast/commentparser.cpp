@@ -930,6 +930,7 @@ public:
           "#undef pthread_cond_wait\n"
           "#undef pthread_cond_timedwait\n"
           "#include \"dylinx-glue.h\"\n"
+          "#include \"dylinx-runtime-config.h\"\n"
           "#endif //__DYLINX_REPLACE_PTHREAD_NATIVE__\n"
         );
       }
@@ -1298,17 +1299,24 @@ int main(int argc, const char **argv) {
   }
 
   // Store original file for revert in the future
-  if (!fs::exists(revert))
+  if (!fs::exists(revert)) {
     fs::create_directory(revert);
+    fs::create_directory(revert / "src");
+    fs::create_directory(revert / "glue");
+    fs::create_directory(revert / "lib");
+  }
   else {
     fs::remove_all(revert);
     fs::create_directory(revert);
+    fs::create_directory(revert / "src");
+    fs::create_directory(revert / "glue");
+    fs::create_directory(revert / "lib");
   }
 
   std::shared_ptr<CompilationDatabase> compiler_db = CompilationDatabase::autoDetectFromSource(compiler_db_path, err);
   ClangTool tool(*compiler_db, compiler_db->getAllFiles());
   tool.run(newSlotIdentificationActionFactory(compiler_db).get());
-
+  revert = revert / "src";
   std::set<fs::path>::iterator it;
   for (it = Dylinx::Instance().altered_files.begin(); it != Dylinx::Instance().altered_files.end(); it++)
     Dylinx::Instance().lock_decl["AlteredFiles"].push_back(it->string());

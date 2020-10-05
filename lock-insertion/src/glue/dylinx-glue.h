@@ -239,5 +239,3 @@ typedef struct UserDefStruct {
 )(cond, mtx, time)
 
 #endif // __DYLINX_SYMBOL__
-
-#include "runtime/dylinx-runtime-config.h"
