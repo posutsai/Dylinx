@@ -358,7 +358,7 @@ public:
         if (call_expr->getDirectCallee()->getNameInfo().getAsString() == std::string("malloc")) {
           const Expr *arg_expr = call_expr->getArg(0);
           SourceLocation arg_begin = arg_expr->getBeginLoc();
-          SourceLocation arg_end = arg_expr->getEndLoc().getLocWithOffset(1);
+          SourceLocation arg_end = call_expr->getEndLoc();
           SourceRange range(arg_begin, arg_end);
           sprintf(
             bites_args, "(%s) / sizeof(%s), sizeof(%s)",
@@ -918,7 +918,7 @@ public:
           "#define pthread_mutex_destroy pthread_mutex_destroy_original\n"
           "#define pthread_mutex_trylock pthread_mutex_trylock_original\n"
           "#define pthread_cond_wait pthread_cond_wait_original\n"
-          "#define pthread_cond_timedwait pthread_cond_timedwait_original"
+          "#define pthread_cond_timedwait pthread_cond_timedwait_original\n"
         );
         Dylinx::Instance().rw_ptr->InsertText(
           header.getLocWithOffset(std::string("<pthread.h>").length() + 1),

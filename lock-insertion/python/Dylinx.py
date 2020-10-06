@@ -16,7 +16,7 @@ def init_wo_callexpr(i, id2type, entities, content):
     if entity.get("define_init", False):
         content.append(
             f"#define DYLINX_LOCK_INIT_{entity['id']} "
-            f"{{ malloc(sizeof(dlx_{ltype.lower()}_t)), 0x32CB00B5, {entity['id']}, 0, malloc(sizeof(dlx_injected_interface_t)), {{0}} }}"
+            f"{{ malloc(sizeof(dlx_{ltype.lower()}_t)), 0x32CB00B5, {entity['id']}, 0, &dlx_{ltype.lower()}_methods_collection, {{0}} }}"
         )
 
 def replace_type(i, id2type, entities, content):
@@ -48,11 +48,15 @@ def extern_symbol_mapping(i, id2type, entities, content):
         for i, e in entities.items():
             if (e["modification_type"] == "VARIABLE" or e["modification_type"] == "ARRAY") and e["name"] == name:
                 return e
-        raise ValueError(f"Trying to mapping an extern symbol {entities[i]}. However not the valid vardecl isn't found")
+        print(f"[WARNING] valid symbol mapping {name} is not found")
+        return None
     entity = entities[i]
     valid = locate_var_decl(entity["name"])
-    ltype = id2type[valid["id"]]
-    content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_{ltype.lower()}_t")
+    if valid != None:
+        ltype = id2type[valid["id"]]
+        content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_{ltype.lower()}_t")
+    else:
+        content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_pthreadmtx_t")
 
 class NaiveSubject:
     def __init__(self, config_path, verbose=logging.DEBUG, insertion=True, fix=False, include_posix=True):
@@ -160,7 +164,7 @@ class NaiveSubject:
             rt_config.write(f"{header_start}\n{content}\n{header_end}")
         os.chdir(str(pathlib.PurePath(self.cc_path).parent))
         os.environ["C_INCLUDE_PATH"] = ":".join([f"{self.home_path}/src/glue", "/usr/local/lib/clang/10.0.0/include", f"{self.glue_dir}/glue"])
-        os.environ["LD_LIBRARY_PATH"] = ":".join([f"{self.home_path}/build/lib", f"{self.glue_dir}/lib"])
+        os.environ["LIBRARY_PATH"] = ":".join([f"{self.home_path}/build/lib", f"{self.glue_dir}/lib"])
         with subprocess.Popen(self.build_inst, stdout=subprocess.PIPE, shell=True) as proc:
             logging.debug(proc.stdout.read().decode("utf-8"))
         return comb

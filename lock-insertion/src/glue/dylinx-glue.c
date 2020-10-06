@@ -5,6 +5,7 @@
 #include "lock/pthreadmtx-lock.h"
 #include <errno.h>
 #include <string.h>
+#include <syscall.h>
 
 #ifndef __DYLINX_GLUE__
 #define __DYLINX_GLUE__
@@ -31,19 +32,19 @@ LOCK_TYPE_CNT macro and corresponding macro definition.
 
 // linked order should be concern
 void retrieve_native_symbol() {
-  native_mutex_init = (int (*)(pthread_mutex_t *, pthread_mutexattr_t *))dlsym(RTLD_NEXT, "pthread_mutex_init");
+  native_mutex_init = (int (*)(pthread_mutex_t *, pthread_mutexattr_t *))dlsym(RTLD_DEFAULT, "pthread_mutex_init");
   CHECK_LOCATE_SYMBOL(native_mutex_init, pthread_mutex_init);
-  native_mutex_lock = (int (*)(pthread_mutex_t *))dlsym(RTLD_NEXT, "pthread_mutex_lock");
+  native_mutex_lock = (int (*)(pthread_mutex_t *))dlsym(RTLD_DEFAULT, "pthread_mutex_lock");
   CHECK_LOCATE_SYMBOL(native_mutex_lock, pthread_mutex_lock);
-  native_mutex_unlock = (int (*)(pthread_mutex_t *))dlsym(RTLD_NEXT, "pthread_mutex_unlock");
+  native_mutex_unlock = (int (*)(pthread_mutex_t *))dlsym(RTLD_DEFAULT, "pthread_mutex_unlock");
   CHECK_LOCATE_SYMBOL(native_mutex_unlock, pthread_mutex_unlock);
-  native_mutex_destroy = (int (*)(pthread_mutex_t *))dlsym(RTLD_NEXT, "pthread_mutex_destroy");
+  native_mutex_destroy = (int (*)(pthread_mutex_t *))dlsym(RTLD_DEFAULT, "pthread_mutex_destroy");
   CHECK_LOCATE_SYMBOL(native_mutex_destroy, pthread_mutex_destroy);
-  native_mutex_trylock = (int (*)(pthread_mutex_t *))dlsym(RTLD_NEXT, "pthread_mutex_trylock");
+  native_mutex_trylock = (int (*)(pthread_mutex_t *))dlsym(RTLD_DEFAULT, "pthread_mutex_trylock");
   CHECK_LOCATE_SYMBOL(native_mutex_trylock, pthread_mutex_trylock);
-  native_cond_wait = (int (*)(pthread_cond_t *, pthread_mutex_t *))dlsym(RTLD_NEXT, "pthread_cond_wait");
+  native_cond_wait = (int (*)(pthread_cond_t *, pthread_mutex_t *))dlsym(RTLD_DEFAULT, "pthread_cond_wait");
   CHECK_LOCATE_SYMBOL(native_cond_wait, pthread_cond_wait);
-  native_cond_timedwait = (int (*)(pthread_cond_t *, pthread_mutex_t *, const struct timespec *))dlsym(RTLD_NEXT, "pthread_cond_timedwait");
+  native_cond_timedwait = (int (*)(pthread_cond_t *, pthread_mutex_t *, const struct timespec *))dlsym(RTLD_DEFAULT, "pthread_cond_timedwait");
   CHECK_LOCATE_SYMBOL(native_cond_timedwait, pthread_cond_timedwait);
 }
 
@@ -157,7 +158,7 @@ int dlx_untrack_arr_init(dlx_generic_lock_t *lock, uint32_t num, char *var_name,
   return 0;
 }
 
-int dlx_error_enable(void *lock) {
+int dlx_error_enable(void *lock, char *var_name, char *file, int line) {
   HANDLING_ERROR(
     "Untrackable lock is trying to enable. Possible cause is\n"
     "_Generic function falls into \'default\' option.\n"
@@ -165,12 +166,18 @@ int dlx_error_enable(void *lock) {
   return -1;
 }
 
-int dlx_forward_enable(void *lock) {
+int dlx_forward_enable(void *lock, char *var_name, char *file, int line) {
+#ifdef __DYLINX_DEBUG__
+  do {
+    char log_msg[300];
+    printf("[TID %8lu] lock %s located in %s L%4d is enable\n", syscall(SYS_gettid), var_name, file, line);
+  } while(0);
+#endif
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   return mtx->methods->lock_fptr(mtx->lock_obj);
 }
 
-int dlx_error_disable(void *lock) {
+int dlx_error_disable(void *lock, char *var_name, char *file, int line) {
   HANDLING_ERROR(
     "Untrackable lock is trying to unlock. Possible cause is\n"
     "_Generic function falls into \'default\' option.\n"
@@ -178,7 +185,11 @@ int dlx_error_disable(void *lock) {
   return -1;
 }
 
-int dlx_forward_disable(void *lock) {
+int dlx_forward_disable(void *lock, char *var_name, char *file, int line) {
+#ifdef __DYLINX_DEBUG__
+  char log_msg[300];
+  printf("[TID %8lu] lock %s located in %s L%4d is disabled\n", syscall(SYS_gettid), var_name, file, line);
+#endif
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   return mtx->methods->unlock_fptr(mtx->lock_obj);
 }
@@ -193,10 +204,13 @@ int dlx_error_destroy(void *lock) {
 
 int dlx_forward_destroy(void *lock) {
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
-  return mtx->methods->destroy_fptr(mtx->lock_obj);
+  mtx->check_code = 0xBADB00B5;
+  int ret = mtx->methods->destroy_fptr(mtx->lock_obj);
+  free(mtx->methods);
+  return ret;
 }
 
-int dlx_error_trylock(void *lock) {
+int dlx_error_trylock(void *lock, char *var_name, char *file, int line) {
   HANDLING_ERROR(
     "Untrackable lock is trying to destroy. Possible cause is\n"
     "_Generic function falls into \'default\' option.\n"
@@ -204,7 +218,11 @@ int dlx_error_trylock(void *lock) {
   return -1;
 }
 
-int dlx_forward_trylock(void *lock) {
+int dlx_forward_trylock(void *lock, char *var_name, char *file, int line) {
+#ifdef __DYLINX_DEBUG__
+  char log_msg[300];
+  printf("[TID %8lu] lock %s located in %s L%4d is trying to enabled\n", pthread_self(), var_name, file, line);
+#endif
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   return mtx->methods->trylock_fptr(mtx->lock_obj);
 }
@@ -322,7 +340,11 @@ void *dlx_ ## ltype ## _obj_init(                                               
     return object;                                                                                            \
   }                                                                                                           \
   return NULL;                                                                                                \
-}
+}\
+  const dlx_injected_interface_t dlx_ ## ltype ## _methods_collection = {                                              \
+    ltype ## _init, ltype ## _lock, ltype ## _trylock, ltype ## _unlock,                                       \
+    ltype ## _destroy, ltype ## _cond_timedwait                                                                \
+  };
 
 #define DLX_IMPLEMENT_EACH_LOCK(...) FOR_EACH(DLX_LOCK_TEMPLATE_IMPLEMENT, __VA_ARGS__)
 DLX_IMPLEMENT_EACH_LOCK(ALLOWED_LOCK_TYPE)
