@@ -70,7 +70,7 @@ int backoff_destroy(void *entity) {
   return 1;
 }
 
-int backoff_cond_wait(pthread_cond_t *cond, void *entity, const struct timespec *time) {}
+int backoff_cond_timedwait(pthread_cond_t *cond, void *entity, const struct timespec *time) {}
 int backoff_trylock(void *entity) {}
 
 #endif

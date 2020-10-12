@@ -35,6 +35,7 @@
 #include "yaml-cpp/yaml.h"
 #include "util.h"
 
+
 #define ARR_ALLOCA_TYPE "ARRAY"
 #define VAR_ALLOCA_TYPE "VARIABLE"
 #define EXTERN_VAR_SYMBOL "EXTERN_VAR_SYMBOL"
@@ -109,6 +110,8 @@ void traverse_init_fields_with_offset(
   uint64_t cur_offset,
   ASTContext& ctx)
 {
+  if (recr->isInvalidDecl())
+	return;
   const ASTRecordLayout& layout = ctx.getASTRecordLayout(recr);
   SourceManager& sm = ctx.getSourceManager();
   for (auto iter = recr->field_begin(); iter != recr->field_end(); iter++) {
@@ -286,7 +289,7 @@ public:
     meta["name"] = ref_name;
     meta["pointee_type"] = arg_type.getAsString();
     FileID src_id = sm.getFileID(sm.getSpellingLoc(begin_loc));
-    if (sm.isInSystemHeader(begin_loc) || src_id.isInvalid())
+    if (src_id.isInvalid() || sm.isInSystemHeader(begin_loc))
       return;
     fs::path src_path = sm.getFileEntryForID(src_id)->getName().str();
     EntityID uid = std::make_tuple(
@@ -301,7 +304,7 @@ public:
       SourceLocation type_end = vd->getTypeSpecEndLoc();
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(vd))
         meta["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
-      if (sm.isAtStartOfImmediateMacroExpansion(type_start)) {
+      if (type_start.isValid() && type_start.isMacroID() && sm.isAtStartOfImmediateMacroExpansion(type_start)) {
         Dylinx::Instance().rw_ptr->ReplaceText(
           sm.getImmediateExpansionRange(type_start).getAsRange(),
           "dlx_generic_lock_t *"
@@ -772,7 +775,7 @@ public:
         // Encoutering a new modifiable lock type.
         char format[50];
         sprintf(format, "DYLINX_LOCK_TYPE_%d", Dylinx::Instance().lock_i);
-        if (sm.isAtStartOfImmediateMacroExpansion(type_loc)) {
+        if (type_loc.isValid() && type_loc.isMacroID() && sm.isAtStartOfImmediateMacroExpansion(type_loc)) {
           Dylinx::Instance().rw_ptr->ReplaceText(
             sm.getImmediateExpansionRange(d->getTypeSpecStartLoc()).getAsRange(),
             format
@@ -1244,6 +1247,7 @@ public:
     std::set<FileID>::iterator iter;
     for (iter = Dylinx::Instance().cu_deps.begin(); iter != Dylinx::Instance().cu_deps.end(); iter++) {
       std::string filename = sm.getFileEntryForID(*iter)->getName().str();
+	  printf("filename is %s\n", filename.c_str());
       write_modified_file(filename, *iter, sm);
       Dylinx::Instance().altered_files.insert(filename);
     }

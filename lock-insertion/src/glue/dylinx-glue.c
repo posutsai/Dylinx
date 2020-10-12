@@ -88,7 +88,7 @@ void *dlx_error_obj_init(uint32_t cnt, uint32_t unit, uint32_t *offsets, uint32_
     file, line
   );
   HANDLING_ERROR(error_msg);
-  return -1;
+  return NULL;
 }
 
 int dlx_error_var_init(void *lock, const pthread_mutexattr_t *attr, char *file, char *var_name, int line) {
@@ -170,7 +170,7 @@ int dlx_forward_enable(void *lock, char *var_name, char *file, int line) {
 #ifdef __DYLINX_DEBUG__
   do {
     char log_msg[300];
-    printf("[TID %8lu] lock %s located in %s L%4d is enable\n", syscall(SYS_gettid), var_name, file, line);
+    printf("[TID %8d] lock %s located in %s L%4d is enable\n", syscall(SYS_gettid), var_name, file, line);
   } while(0);
 #endif
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;

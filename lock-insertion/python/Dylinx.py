@@ -74,6 +74,7 @@ class NaiveSubject:
         with open(config_path, "r") as yaml_file:
             conf = list(yaml.load_all(yaml_file, Loader=yaml.FullLoader))[0]
             self.cc_path = os.path.expandvars(conf["compile_commands"])
+            os.chdir(os.path.dirname(os.path.expandvars(conf["compile_commands"])))
             self.glue_dir = os.path.dirname(self.cc_path) + "/.dylinx"
             self.out_dir = os.path.expandvars(conf["output_directory"])
             self.build_inst = conf["instructions"][0]["build"]
@@ -81,6 +82,7 @@ class NaiveSubject:
             self.execu_inst = conf["instructions"][2]["execute"]
         self.home_path = os.environ["DYLINX_HOME"]
         self.executable = f"{self.home_path}/build/bin/dylinx"
+        os.environ["C_INCLUDE_PATH"] = ":".join([f"{self.home_path}/src/glue", "/usr/local/lib/clang/10.0.0/include", f"{self.glue_dir}/glue"])
         self.inject_symbol()
         with open(f"{self.out_dir}/dylinx-insertion.yaml", "r") as stream:
             meta = list(yaml.load_all(stream, Loader=yaml.FullLoader))[0]

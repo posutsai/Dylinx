@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #ifndef __DYLINX_REPLACE_PTHREAD_NATIVE__
 #define __DYLINX_REPLACE_PTHREAD_NATIVE__
-#define pthread_mutex_t pthread_mutex_original_t
 #define pthread_mutex_init pthread_mutex_init_original
 #define pthread_mutex_lock pthread_mutex_lock_original
 #define pthread_mutex_unlock pthread_mutex_unlock_original
@@ -29,7 +28,7 @@
 typedef struct ttas_lock {
   volatile uint8_t spin_lock __attribute__((aligned(L_CACHE_LINE_SIZE)));
   char __pad[pad_to_cache_line(sizeof(uint8_t))];
-  pthread_mutex_original_t posix_lock;
+  pthread_mutex_t posix_lock;
 } ttas_lock_t __attribute__((aligned(L_CACHE_LINE_SIZE)));
 
 // Paper:
@@ -97,7 +96,7 @@ int ttas_destroy(void *entity) {
   return 1;
 }
 
-int ttas_condwait(pthread_cond_t *cond, void *entity) {
+int ttas_cond_timedwait(pthread_cond_t *cond, void *entity, const struct timespec *time) {
   int res;
   __ttas_unlock(entity);
   ttas_lock_t *mtx = entity;
