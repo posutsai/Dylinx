@@ -1,6 +1,0 @@
-compile_commands: ${DYLINX_HOME}/sample/access_counting/compile_commands.json
-output_directory: ${DYLINX_HOME}/sample/access_counting
-instructions:
-  - build: "cd $DYLINX_HOME/sample/access_counting; make sample"
-  - clean: "cd $DYLINX_HOME/sample/access_counting; make clean"
-  - execute: "cd $DYLINX_HOME/sample/access_counting; ./bin/sample"
