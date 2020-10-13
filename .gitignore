@@ -2,3 +2,6 @@
 */bin/*
 venv
 */a.out
+DLX
+build
+.xmake
