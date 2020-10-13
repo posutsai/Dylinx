@@ -1,6 +1,0 @@
-[submodule "lock-overhead-measure/litl"]
-	path = lock-overhead-measure/litl
-	url = https://github.com/multicore-locks/litl.git
-[submodule "lock-insertion/sample/database/memcached"]
-	path = lock-insertion/sample/database/memcached
-	url = git@github.com:memcached/memcached.git
