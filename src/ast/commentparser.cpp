@@ -78,8 +78,12 @@ public:
   std::set<EntityID> metas;
   std::set<FileID> cu_deps;
   std::set<FileID> decorated_headers;
-  std::map<std::string, std::string> cu_arrs;
-  std::map<std::string, std::vector<std::string>> cu_recr;
+  std::map<std::string, std::tuple<std::string, uint32_t, uint32_t>> cu_arrs;
+  std::map<std::string, std::tuple<uint32_t, uint32_t>> cu_gvars;
+  std::map<
+    std::string,
+    std::vector<std::tuple<std::string, uint32_t, uint32_t>>
+  > cu_recr;
   std::set<fs::path> altered_files;
   std::ofstream yaml_fout;
   YAML::Node lock_decl;
@@ -142,19 +146,32 @@ void traverse_init_fields_with_offset(
   }
 }
 
-void traverse_init_fields_with_name(const RecordDecl *recr, std::vector<std::string>& init_str, std::vector<std::string>& field_seq) {
+void traverse_init_fields_with_name(
+  const RecordDecl *recr,
+  std::vector<std::tuple<std::string, uint32_t, uint32_t>>& init_params,
+  std::vector<std::string>& field_seq,
+  SourceManager& sm
+  ) {
   for (auto iter = recr->field_begin(); iter != recr->field_end(); iter++) {
     const clang::Type *t = iter->getType().getTypePtr();
     std::string type_name = t->getCanonicalTypeInternal().getAsString();
     if (t->isStructureType() && type_name != "pthread_mutex_t") {
       field_seq.push_back(iter->getNameAsString());
-      traverse_init_fields_with_name(t->getAsStructureType()->getDecl(), init_str, field_seq);
+      traverse_init_fields_with_name(t->getAsStructureType()->getDecl(), init_params, field_seq, sm);
     }
     else if (type_name == "pthread_mutex_t") {
       std::string prefix = "";
+      SourceLocation begin_loc = iter->getBeginLoc();
+      const FileEntry *fentry = sm.getFileEntryForID(sm.getFileID(begin_loc));
       for (auto el = field_seq.begin(); el != field_seq.end(); el++)
         prefix = prefix + std::string(".") + *el;
-      init_str.push_back(prefix + std::string(".") + iter->getNameAsString());
+      init_params.push_back(
+        std::make_tuple(
+          prefix + std::string(".") + iter->getNameAsString(),
+          fentry->getUID(),
+          sm.getSpellingLineNumber(begin_loc)
+        )
+      );
     } else {
       continue;
     }
@@ -398,10 +415,11 @@ public:
         char replace_expr[300];
         sprintf(
           replace_expr,
-          "__dylinx_object_init_(%s, %s, %lu, ((DYLINX_LOCK_TYPE_%d *)0), DYLINX_LOCK_INIT_%d);",
+          "__dylinx_object_init_(%s, %s, %lu, ((DYLINX_LOCK_TYPE_%d *)0), DYLINX_LOCK_INIT_%d, DYLINX_LOCK_OBJ_INDICATOR_%d);",
           bites_args,
           init_params.size()? comp_liter.c_str(): "NULL",
           init_params.size(),
+          Dylinx::Instance().lock_i,
           Dylinx::Instance().lock_i,
           Dylinx::Instance().lock_i
         );
@@ -425,6 +443,7 @@ public:
 //    pthread_mutex_t m[2], n[5];
 //    However, according to current code structure it would be
 //    not too hard to ipmlement.
+// 2. Array of structure isn't handled well in current version.
 class ArrayMatchHandler: public MatchFinder::MatchCallback {
 public:
   ArrayMatchHandler() {}
@@ -487,21 +506,28 @@ public:
       std::string size_src = Lexer::getSourceText(size_char_rng, sm, result.Context->getLangOpts()).str();
 
       if (!d->isStaticLocal() && d->hasGlobalStorage()) {
-        alloca["extra_init"] = sm.getFileEntryForID(sm.getMainFileID())->getUID();
-        Dylinx::Instance().cu_arrs[d->getNameAsString()] = size_src;
+        alloca["extra_init"] = 1;
+        Dylinx::Instance().cu_arrs[d->getNameAsString()] = std::make_tuple(
+          size_src,
+          sm.getFileEntryForID(src_id)->getUID(),
+          sm.getSpellingLineNumber(type_loc.getBeginLoc())
+        );
       } else {
         char init_mtx[200];
         sprintf(
           init_mtx,
-          "\t__dylinx_array_init_(%s, %s);\n",
+          "\t__dylinx_array_init_(%s, %s, DYLINX_ARRAY_DECL_%u_%u);\n",
           d->getNameAsString().c_str(),
-          size_src.c_str()
+          size_src.c_str(),
+          sm.getFileEntryForID(src_id)->getUID(),
+          sm.getSpellingLineNumber(type_loc.getBeginLoc())
         );
         Dylinx::Instance().rw_ptr->InsertTextAfter(
           d->getEndLoc().getLocWithOffset(2),
           init_mtx
         );
       }
+      alloca["fentry_uid"] = sm.getFileEntryForID(src_id)->getUID();
       save2metas(uid, alloca, src_id, sm);
       save2altered_list(src_id, sm);
     }
@@ -586,6 +612,7 @@ public:
         decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
       }
       decl_loc["modification_type"] = FIELD_INSERT;
+      decl_loc["fentry_uid"] = sm.getFileEntryForID(src_id)->getUID();
       save2metas(uid, decl_loc, src_id, sm);
       save2altered_list(src_id, sm);
     }
@@ -614,10 +641,10 @@ public:
         sm.getSpellingLineNumber(begin_loc),
         sm.getSpellingColumnNumber(begin_loc)
       );
-      std::vector<std::string> init_str;
+      std::vector<std::tuple<std::string, uint32_t, uint32_t>> init_params;
       std::vector<std::string> field_seq;
-      traverse_init_fields_with_name(vd->getType().getTypePtr()->getAsRecordDecl(), init_str, field_seq);
-      if (!init_str.size())
+      traverse_init_fields_with_name(vd->getType().getTypePtr()->getAsRecordDecl(), init_params, field_seq, sm);
+      if (!init_params.size())
         return;
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(StructDecl, vd, sm);
@@ -625,21 +652,22 @@ public:
       YAML::Node meta;
       meta["name"] = vd->getNameAsString();
       meta["modification_type"] = VAR_FIELD_INIT;
+      meta["fentry_uid"] = sm.getFileEntryForID(src_id)->getUID();
 
       if (!vd->isStaticLocal() && vd->hasGlobalStorage()) {
         Dylinx::Instance().require_init = true;
-        meta["extra_init"] = sm.getFileEntryForID(sm.getMainFileID())->getUID();
-        Dylinx::Instance().cu_recr[vd->getNameAsString()] = init_str;
+        meta["extra_init"] = 1;
+        Dylinx::Instance().cu_recr[vd->getNameAsString()] = init_params;
       } else {
         std::string var_name = vd->getNameAsString();
         std::string concat_init = "";
-        for (auto it = init_str.begin(); it != init_str.end(); it++) {
+        for (auto it = init_params.begin(); it != init_params.end(); it++) {
           char init_field[200];
-          std::string field_name = var_name + *it;
+          std::string field_name = var_name + std::get<0>(*it);
           sprintf(
             init_field,
-            "\t__dylinx_member_init_(&%s, NULL);\n",
-            field_name.c_str()
+            "\t__dylinx_member_init_(&%s, NULL, DYLINX_FIELD_DECL_%u_%u);\n",
+            field_name.c_str(), std::get<1>(*it), std::get<2>(*it)
           );
           concat_init = concat_init + init_field;
         }
@@ -656,7 +684,7 @@ public:
       SourceManager& sm = result.Context->getSourceManager();
       SourceLocation begin_loc = init_expr->getLBraceLoc();
       char format[100];
-      sprintf(format, "DYLINXR_DUMMY_INIT");
+      sprintf(format, "DYLINX_DUMMY_INIT");
       Dylinx::Instance().rw_ptr->ReplaceText(
         sm.getImmediateExpansionRange(begin_loc).getAsRange(),
         format
@@ -803,6 +831,10 @@ public:
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(d))
         meta["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
       meta["modification_type"] = VAR_ALLOCA_TYPE;
+      Dylinx::Instance().cu_gvars[var_name] = std::make_tuple(
+        sm.getFileEntryForID(src_id)->getUID(),
+        sm.getSpellingLineNumber(type_loc)
+      );
 
       // Dealing with initialization
       if (!d->isStaticLocal() && d->hasGlobalStorage()) {
@@ -818,7 +850,7 @@ public:
           );
         }
         if (cur_type != pre_type)
-          meta["extra_init"] = sm.getFileEntryForID(sm.getMainFileID())->getUID();
+          meta["extra_init"] = 1;
 
       } else if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
 
@@ -842,6 +874,7 @@ public:
       }
 
       meta["name"] = var_name;
+      meta["fentry_uid"] = sm.getFileEntryForID(src_id)->getUID();
       save2metas(cur_type, meta, src_id, sm);
       save2altered_list(src_id, sm);
       pre_type = cur_type;
@@ -898,6 +931,8 @@ public:
     Dylinx::Instance().require_init = false;
     Dylinx::Instance().cu_deps.clear();
     Dylinx::Instance().cu_arrs.clear();
+    Dylinx::Instance().cu_recr.clear();
+    Dylinx::Instance().cu_gvars.clear();
     Dylinx::Instance().rw_ptr = new Rewriter;
     Dylinx::Instance().rw_ptr->setSourceMgr(sm, opts);
 
@@ -1207,33 +1242,47 @@ public:
       YAML::Node entity = Dylinx::Instance().lock_decl["LockEntity"];
       for (YAML::const_iterator it = entity.begin(); it != entity.end(); it++) {
         const YAML::Node& entity = *it;
-        if (entity["extra_init"] && entity["extra_init"].as<uint32_t>() == main_id) {
+        if (entity["extra_init"] && entity["fentry_uid"].as<uint32_t>() == main_id) {
           char init_mtx[200];
           std::string var_name = entity["name"].as<std::string>();
           if (entity["modification_type"].as<std::string>() == std::string(ARR_ALLOCA_TYPE)) {
+            std::tuple<std::string, uint32_t, uint32_t> init_params = Dylinx::Instance().cu_arrs[var_name];
             sprintf(
               init_mtx,
-              "\t__dylinx_array_init_(%s, %s);\n",
+              "\t__dylinx_array_init_(%s, %s, DYLINX_ARRAY_DECL_%u_%u);\n",
               var_name.c_str(),
-              Dylinx::Instance().cu_arrs[var_name].c_str()
+              std::get<0>(init_params).c_str(),
+              std::get<1>(init_params),
+              std::get<2>(init_params)
             );
           } else if (entity["modification_type"].as<std::string>() == std::string(VAR_FIELD_INIT)) {
-            std::vector<std::string> init_str = Dylinx::Instance().cu_recr[var_name];
+            std::vector<std::tuple<std::string, uint32_t, uint32_t>> init_params = Dylinx::Instance().cu_recr[var_name];
             std::string concat_init = "";
-            for (auto it = init_str.begin(); it != init_str.end(); it++) {
-              std::string field_name = var_name + *it;
+            for (auto it = init_params.begin(); it != init_params.end(); it++) {
+              std::string field_name = var_name + std::get<0>(*it);
               sprintf(
                 init_mtx,
-                "\t__dylinx_member_init_(&%s, NULL);\n",
-                field_name.c_str()
+                "\t__dylinx_member_init_(&%s, NULL, DYLINX_FIELD_DECL_%u_%u);\n",
+                field_name.c_str(),
+                std::get<1>(*it),
+                std::get<2>(*it)
               );
               concat_init = concat_init + init_mtx;
             }
             global_initializer.append(concat_init);
             continue;
           }
-          else
-            sprintf(init_mtx, "\t__dylinx_member_init_(&%s, NULL);\n", var_name.c_str());
+          else if (entity["modification_type"].as<std::string>() == std::string(VAR_ALLOCA_TYPE)) {
+            std::tuple<uint32_t, uint32_t> init_params = Dylinx::Instance().cu_gvars[var_name];
+            sprintf(
+              init_mtx,
+              "\t__dylinx_member_init_(&%s, NULL, DYLINX_VAR_DECL_%u_%u);\n",
+              var_name.c_str(),
+              std::get<0>(init_params),
+              std::get<1>(init_params)
+            );
+          } else
+            assert(false); // modification_type is not acceptable.
           global_initializer.append(init_mtx);
         }
       }
