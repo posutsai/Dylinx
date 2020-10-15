@@ -57,6 +57,8 @@ int backoff_lock(void *entity) {
   return 0;
 }
 
+int backoff_trylock(void *entity) {}
+
 int backoff_unlock(void *entity) {
   COMPILER_BARRIER();
   backoff_lock_t *mtx = entity;
@@ -71,6 +73,5 @@ int backoff_destroy(void *entity) {
 }
 
 int backoff_cond_timedwait(pthread_cond_t *cond, void *entity, const struct timespec *time) {}
-int backoff_trylock(void *entity) {}
 
 #endif

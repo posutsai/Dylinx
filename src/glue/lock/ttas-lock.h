@@ -51,6 +51,9 @@ int ttas_init(void **entity, pthread_mutexattr_t *attr) {
 }
 
 int ttas_lock(void *entity) {
+#ifdef __DYLINX_DEBUG__
+  printf("ttas-lock is enabled !!!\n");
+#endif
   ttas_lock_t *mtx = entity;
   while (1) {
     while (mtx->spin_lock != UNLOCKED)
@@ -60,9 +63,6 @@ int ttas_lock(void *entity) {
   }
   int ret = pthread_mutex_lock_original(&mtx->posix_lock);
   assert(ret == 0);
-#ifdef __DYLINX_DEBUG__
-  printf("ttas-lock is enabled !!!\n");
-#endif
   return 0;
 }
 

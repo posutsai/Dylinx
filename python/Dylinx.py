@@ -9,41 +9,64 @@ import pathlib
 from flask import request, jsonify, Blueprint
 import requests
 
-def init_wo_callexpr(i, id2type, entities, content):
+def var_macro_handler(i, id2type, entities, content):
     ltype = id2type[i]
     entity = entities[i]
     content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_{ltype.lower()}_t")
     if entity.get("define_init", False):
         content.append(
             f"#define DYLINX_LOCK_INIT_{entity['id']} "
-            f"{{ malloc(sizeof(dlx_{ltype.lower()}_t)), 0x32CB00B5, {entity['id']}, 0, &dlx_{ltype.lower()}_methods_collection, {{0}} }}"
+            f"{{ malloc(sizeof(dlx_{ltype.lower()}_t)), 0x32CB00B5, {{ {entity['id']}, 100 }}, &dlx_{ltype.lower()}_methods_collection, {{0}} }}"
+        )
+    if entity.get("extra_init", False):
+        content.append(
+            f"#define DYLINX_VAR_DECL_{entity['fentry_uid']}_{entity['line']} {entity['id']}"
         )
 
-def replace_type(i, id2type, entities, content):
+def arr_macro_handler(i, id2type, entities, content):
     ltype = id2type[i]
     entity = entities[i]
     content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_{ltype.lower()}_t")
-    if entity["modification_type"] == "MUTEX_MEM_ALLOCATION":
-        content.append(f"#define DYLINX_LOCK_INIT_{entity['id']} NULL")
+    content.append(f"#define DYLINX_ARRAY_DECL_{entity['fentry_uid']}_{entity['line']} {entity['id']}")
 
-def define_obj_macro(i, id2type, entities, content):
+def mtx_alloc_handler(i, id2type, entities, content):
+    ltype = id2type[i]
+    entity = entities[i]
+    content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_{ltype.lower()}_t")
+    content.append(f"#define DYLINX_LOCK_INIT_{entity['id']} NULL")
+    content.append(f"#define DYLINX_LOCK_OBJ_INDICATOR_{entity['id']} (int []){{ {entity['id']} }}")
 
-    def locate_field_decl(name, f_uid, line):
-        for i, e in entities.items():
-            if e["modification_type"] == "FIELD_INSERT" and e["field_name"] == name and e["file_uid"] == f_uid and e["line"] == line:
-                return e
+def locate_field_decl(name, f_uid, line, entities):
+    for i, e in entities.items():
+        if e["modification_type"] == "FIELD_INSERT" and e["field_name"] == name and e["fentry_uid"] == f_uid and e["line"] == line:
+            return e
 
+def field_decl_handler(i, id2type, entities, content):
+    ltype = id2type[i]
+    entity = entities[i]
+    content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_{ltype.lower()}_t")
+    content.append(f"#define DYLINX_FIELD_DECL_{entity['fentry_uid']}_{entity['line']} {entity['id']}")
+
+
+def struct_alloc_handler(i, id2type, entities, content):
     entity = entities[i]
     content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} user_def_struct_t")
     init_methods = []
+    indicators = []
+
     for m in entity["member_info"]:
-        decl = locate_field_decl(m["field_name"], m["file_uid"], m["line"])
+        decl = locate_field_decl(m["field_name"], m["fentry_uid"], m["line"], entities)
         field_ltype = id2type[decl["id"]]
+        indicators.append(str(decl["id"]))
         init_methods.append(f"(void *)dlx_{field_ltype.lower()}_var_init")
+    id_str = "(int []) { " + ",".join(indicators) + "}"
     init_methods = "(void *[]) { " + ",".join(init_methods) + "}"
     content.append(f"#define DYLINX_LOCK_INIT_{entity['id']} {init_methods}")
+    content.append(f"#define DYLINX_LOCK_OBJ_INDICATOR_{entity['id']} {id_str}")
 
-def extern_symbol_mapping(i, id2type, entities, content):
+
+
+def extern_symbol_handler(i, id2type, entities, content):
     def locate_var_decl(name):
         for i, e in entities.items():
             if (e["modification_type"] == "VARIABLE" or e["modification_type"] == "ARRAY") and e["name"] == name:
@@ -61,13 +84,13 @@ def extern_symbol_mapping(i, id2type, entities, content):
 class NaiveSubject:
     def __init__(self, config_path, verbose=logging.DEBUG, insertion=True, fix=False, include_posix=True):
         self.init_mapping = {
-            "VARIABLE": init_wo_callexpr,
-            "ARRAY": replace_type,
-            "FIELD_INSERT": replace_type,
-            "MUTEX_MEM_ALLOCATION": replace_type,
-            "EXTERN_VAR_SYMBOL": extern_symbol_mapping,
-            "EXTERN_ARR_SYMBOL": extern_symbol_mapping,
-            "STRUCT_MEM_ALLOCATION": define_obj_macro
+            "VARIABLE": var_macro_handler,
+            "ARRAY": arr_macro_handler,
+            "FIELD_INSERT": field_decl_handler,
+            "MUTEX_MEM_ALLOCATION": mtx_alloc_handler,
+            "EXTERN_VAR_SYMBOL": extern_symbol_handler,
+            "EXTERN_ARR_SYMBOL": extern_symbol_handler,
+            "STRUCT_MEM_ALLOCATION": struct_alloc_handler
         }
         self.logger = logging.getLogger("dylinx_logger")
         self.logger.setLevel(verbose)
@@ -103,7 +126,7 @@ class NaiveSubject:
         init_cu = set()
         for m in meta["LockEntity"]:
             if "extra_init" in m.keys():
-                init_cu.add(m["extra_init"])
+                init_cu.add(m["fentry_uid"])
         self.extra_init_cu = init_cu
         self.entities = { e["id"]: e for e in meta["LockEntity"] }
         with open(f"{self.glue_dir}/glue/dylinx-runtime-init.c", "w") as rt_code:
@@ -120,8 +143,8 @@ class NaiveSubject:
             rt_code.write(code)
         cmd = f"""
             cd {self.glue_dir}/glue;
-            clang -fPIC -c {self.glue_dir}/glue/dylinx-runtime-init.c -o {self.glue_dir}/lib/dylinx-runtime-init.o -I{self.home_path}/src/glue -I.;
-            clang -shared -o {self.glue_dir}/lib/libdlx-init.so {self.glue_dir}/lib/dylinx-runtime-init.o;
+            clang -c {self.glue_dir}/glue/dylinx-runtime-init.c -o {self.glue_dir}/lib/dylinx-runtime-init.o -I{self.home_path}/src/glue -I.;
+            ar rcs -o {self.glue_dir}/lib/libdlx-init.a {self.glue_dir}/lib/dylinx-runtime-init.o;
             /bin/rm -f {self.glue_dir}/lib/dylinx-runtime-init.o
         """
         with subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True) as proc:
@@ -167,6 +190,7 @@ class NaiveSubject:
         os.chdir(str(pathlib.PurePath(self.cc_path).parent))
         os.environ["C_INCLUDE_PATH"] = ":".join([f"{self.home_path}/src/glue", "/usr/local/lib/clang/10.0.0/include", f"{self.glue_dir}/glue"])
         os.environ["LIBRARY_PATH"] = ":".join([f"{self.home_path}/build/lib", f"{self.glue_dir}/lib"])
+        sys.exit()
         with subprocess.Popen(self.build_inst, stdout=subprocess.PIPE, shell=True) as proc:
             logging.debug(proc.stdout.read().decode("utf-8"))
         return comb

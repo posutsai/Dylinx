@@ -82,7 +82,7 @@ public:
   std::map<std::string, std::tuple<uint32_t, uint32_t>> cu_gvars;
   std::map<
     std::string,
-    std::vector<std::tuple<std::string, uint32_t, uint32_t>>
+    std::vector<std::tuple<std::string, std::string, uint32_t, uint32_t>>
   > cu_recr;
   std::set<fs::path> altered_files;
   std::ofstream yaml_fout;
@@ -148,7 +148,7 @@ void traverse_init_fields_with_offset(
 
 void traverse_init_fields_with_name(
   const RecordDecl *recr,
-  std::vector<std::tuple<std::string, uint32_t, uint32_t>>& init_params,
+  std::vector<std::tuple<std::string, std::string, uint32_t, uint32_t>>& init_params,
   std::vector<std::string>& field_seq,
   SourceManager& sm
   ) {
@@ -168,6 +168,7 @@ void traverse_init_fields_with_name(
       init_params.push_back(
         std::make_tuple(
           prefix + std::string(".") + iter->getNameAsString(),
+          iter->getNameAsString(),
           fentry->getUID(),
           sm.getSpellingLineNumber(begin_loc)
         )
@@ -367,7 +368,7 @@ public:
           comp_liter = comp_liter + std::string(format);
           YAML::Node member_info;
           member_info["field_name"] = std::get<1>(*it);
-          member_info["file_uid"] = std::get<2>(*it);
+          member_info["fentry_uid"] = std::get<2>(*it);
           member_info["line"] = std::get<3>(*it);
           meta["member_info"].push_back(member_info);
         }
@@ -506,7 +507,7 @@ public:
       std::string size_src = Lexer::getSourceText(size_char_rng, sm, result.Context->getLangOpts()).str();
 
       if (!d->isStaticLocal() && d->hasGlobalStorage()) {
-        alloca["extra_init"] = 1;
+        alloca["extra_init"] = true;
         Dylinx::Instance().cu_arrs[d->getNameAsString()] = std::make_tuple(
           size_src,
           sm.getFileEntryForID(src_id)->getUID(),
@@ -588,7 +589,7 @@ public:
       SourceLocation begin_loc = fd->getBeginLoc();
       FileID src_id = sm.getFileID(begin_loc);
       const FileEntry *fentry = sm.getFileEntryForID(src_id);
-      decl_loc["file_uid"] = fentry->getUID();
+      decl_loc["fentry_uid"] = fentry->getUID();
       fs::path src_path = fentry->getName().str();
       EntityID uid = std::make_tuple(
         src_path,
@@ -641,7 +642,7 @@ public:
         sm.getSpellingLineNumber(begin_loc),
         sm.getSpellingColumnNumber(begin_loc)
       );
-      std::vector<std::tuple<std::string, uint32_t, uint32_t>> init_params;
+      std::vector<std::tuple<std::string, std::string, uint32_t, uint32_t>> init_params;
       std::vector<std::string> field_seq;
       traverse_init_fields_with_name(vd->getType().getTypePtr()->getAsRecordDecl(), init_params, field_seq, sm);
       if (!init_params.size())
@@ -653,10 +654,9 @@ public:
       meta["name"] = vd->getNameAsString();
       meta["modification_type"] = VAR_FIELD_INIT;
       meta["fentry_uid"] = sm.getFileEntryForID(src_id)->getUID();
-
       if (!vd->isStaticLocal() && vd->hasGlobalStorage()) {
         Dylinx::Instance().require_init = true;
-        meta["extra_init"] = 1;
+        meta["extra_init"] = true;
         Dylinx::Instance().cu_recr[vd->getNameAsString()] = init_params;
       } else {
         std::string var_name = vd->getNameAsString();
@@ -667,9 +667,14 @@ public:
           sprintf(
             init_field,
             "\t__dylinx_member_init_(&%s, NULL, DYLINX_FIELD_DECL_%u_%u);\n",
-            field_name.c_str(), std::get<1>(*it), std::get<2>(*it)
+            field_name.c_str(), std::get<2>(*it), std::get<3>(*it)
           );
           concat_init = concat_init + init_field;
+          YAML::Node member_info;
+          member_info["field_name"] = std::get<1>(*it);
+          member_info["fentry_uid"] = std::get<2>(*it);
+          member_info["line"] = std::get<3>(*it);
+          meta["member_info"].push_back(member_info);
         }
         Dylinx::Instance().rw_ptr->InsertTextAfter(
           vd->getEndLoc().getLocWithOffset(var_name.size() + 2),
@@ -682,11 +687,11 @@ public:
     return;
     if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("struct_member_init")) {
       SourceManager& sm = result.Context->getSourceManager();
-      SourceLocation begin_loc = init_expr->getLBraceLoc();
+      SourceLocation begin_loc = init_expr->getBeginLoc();
       char format[100];
       sprintf(format, "DYLINX_DUMMY_INIT");
       Dylinx::Instance().rw_ptr->ReplaceText(
-        sm.getImmediateExpansionRange(begin_loc).getAsRange(),
+        sm.getSpellingLoc(begin_loc), std::string("PTHREAD_MUTEX_INITIALIZER").size(),
         format
       );
     }
@@ -850,7 +855,7 @@ public:
           );
         }
         if (cur_type != pre_type)
-          meta["extra_init"] = 1;
+          meta["extra_init"] = true;
 
       } else if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
 
@@ -967,6 +972,8 @@ public:
           "#undef pthread_mutex_trylock\n"
           "#undef pthread_cond_wait\n"
           "#undef pthread_cond_timedwait\n"
+          "#undef PTHREAD_MUTEX_INITIALIZER\n"
+          "#define PTHREAD_MUTEX_INITIALIZER {NULL, 0, {0XABADBABE, 0xFEE1DEAD}, NULL, {0}}\n"
           "#include \"dylinx-glue.h\"\n"
           "#include \"dylinx-runtime-config.h\"\n"
           "#endif //__DYLINX_REPLACE_PTHREAD_NATIVE__\n"
@@ -1256,7 +1263,7 @@ public:
               std::get<2>(init_params)
             );
           } else if (entity["modification_type"].as<std::string>() == std::string(VAR_FIELD_INIT)) {
-            std::vector<std::tuple<std::string, uint32_t, uint32_t>> init_params = Dylinx::Instance().cu_recr[var_name];
+            std::vector<std::tuple<std::string, std::string, uint32_t, uint32_t>> init_params = Dylinx::Instance().cu_recr[var_name];
             std::string concat_init = "";
             for (auto it = init_params.begin(); it != init_params.end(); it++) {
               std::string field_name = var_name + std::get<0>(*it);
@@ -1264,8 +1271,8 @@ public:
                 init_mtx,
                 "\t__dylinx_member_init_(&%s, NULL, DYLINX_FIELD_DECL_%u_%u);\n",
                 field_name.c_str(),
-                std::get<1>(*it),
-                std::get<2>(*it)
+                std::get<2>(*it),
+                std::get<3>(*it)
               );
               concat_init = concat_init + init_mtx;
             }

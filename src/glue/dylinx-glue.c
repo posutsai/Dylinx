@@ -30,6 +30,8 @@ LOCK_TYPE_CNT macro and corresponding macro definition.
   }                                                                                                         \
 } while(0)
 
+uint32_t g_ins_id = 0;
+
 // linked order should be concern
 void retrieve_native_symbol() {
   native_mutex_init = (int (*)(pthread_mutex_t *, pthread_mutexattr_t *))dlsym(RTLD_DEFAULT, "pthread_mutex_init");
@@ -78,7 +80,7 @@ int pthread_cond_timedwait_original(pthread_cond_t *cond, pthread_mutex_t *mtx, 
 }
 // }}}
 
-void *dlx_error_obj_init(uint32_t cnt, uint32_t unit, uint32_t *offsets, uint32_t n_offset, void **init_funcs, char *file, int line) {
+void *dlx_error_obj_init(uint32_t cnt, uint32_t unit, uint32_t *offsets, uint32_t n_offset, void **init_funcs, int *type_ids, char *file, int line) {
   char error_msg[1000];
   sprintf(
     error_msg,
@@ -91,7 +93,23 @@ void *dlx_error_obj_init(uint32_t cnt, uint32_t unit, uint32_t *offsets, uint32_
   return NULL;
 }
 
-int dlx_error_var_init(void *lock, const pthread_mutexattr_t *attr, char *file, char *var_name, int line) {
+void *dlx_struct_obj_init(uint32_t cnt, uint32_t unit, uint32_t *offsets, uint32_t n_offset, void **init_funcs, int *type_ids, char *file, int line) {
+  char *object = calloc(cnt, unit);
+  if (object) {
+    for (uint32_t c = 0; c < cnt; c++) {
+      for (uint32_t n = 0; n < n_offset; n++) {
+        dlx_generic_lock_t *lock = object + c * unit + offsets[n];
+        int (*init_fptr)(dlx_generic_lock_t *, pthread_mutexattr_t *, int32_t, char *, char *, int);
+        init_fptr = init_funcs[n];
+        init_fptr(lock, NULL, type_ids[n], "forward_from_obj_init", file, line);
+      }
+    }
+    return object;
+  }
+  return NULL;
+}
+
+int dlx_error_var_init(void *lock, const pthread_mutexattr_t *attr, int type_id, char *file, char *var_name, int line) {
   char error_msg[1000];
   sprintf(
     error_msg,
@@ -104,8 +122,8 @@ int dlx_error_var_init(void *lock, const pthread_mutexattr_t *attr, char *file, 
   return -1;
 }
 
-int dlx_untrack_var_init(dlx_generic_lock_t *lock, const pthread_mutexattr_t *attr, char *file, char *var_name, int line) {
-  if (lock && lock->check_code == 0x32CB00B5);
+int dlx_untrack_var_init(dlx_generic_lock_t *lock, const pthread_mutexattr_t *attr, int type_id, char *var_name, char *file, int line) {
+  if (lock && lock->check_code == 0x32CB00B5)
     return 0;
 #ifdef __DYLINX_DEBUG__
   char log_msg[300];
@@ -121,10 +139,45 @@ int dlx_untrack_var_init(dlx_generic_lock_t *lock, const pthread_mutexattr_t *at
   lock->methods->destroy_fptr = pthreadmtx_destroy;
   lock->methods->cond_timedwait_fptr = pthreadmtx_cond_timedwait;
   lock->check_code = 0x32CB00B5;
+  lock->ind.pair.type_id = -1;
+  lock->ind.pair.ins_id = __sync_fetch_and_add(&g_ins_id, 1);
   return (!lock->methods || lock->methods->init_fptr(&lock->lock_obj, NULL))? -1: 0;
 }
 
-int dlx_error_arr_init(void *lock, uint32_t size, char *var_name, char *file, int line) {
+int dlx_error_check_init(void *lock, const pthread_mutexattr_t *attr, char *var_name, char *file, int line) {
+  char error_msg[1000];
+  sprintf(
+    error_msg,
+    "Untrackable checking initialization is conducted. Possible\n"
+    "cause is _Generic function falls into \'default\' option.\n"
+    "According to source code, error of checking %s happens near %s L%d.",
+    var_name, file, line
+  );
+  HANDLING_ERROR(error_msg);
+  return -1;
+}
+
+int dlx_untrack_check_init(dlx_generic_lock_t *lock, const pthread_mutexattr_t *attr, char *var_name, char *file, int line) {
+  if (lock && lock->check_code == 0x32CB00B5)
+    return 0;
+#ifdef __DYLINX_DEBUG__
+  char log_msg[300];
+  printf("Untracked lock variable located in %s %s L%4d is checked\n", file, var_name, line);
+#endif
+  lock->methods = calloc(1, sizeof(dlx_injected_interface_t));
+  lock->methods->init_fptr = pthreadmtx_init;
+  lock->methods->lock_fptr = pthreadmtx_lock;
+  lock->methods->trylock_fptr = pthreadmtx_trylock;
+  lock->methods->unlock_fptr = pthreadmtx_unlock;
+  lock->methods->destroy_fptr = pthreadmtx_destroy;
+  lock->methods->cond_timedwait_fptr = pthreadmtx_cond_timedwait;
+  lock->check_code = 0x32CB00B5;
+  lock->ind.pair.type_id = -1;
+  lock->ind.pair.ins_id = __sync_fetch_and_add(&g_ins_id, 1);
+  return (!lock->methods || lock->methods->init_fptr(&lock->lock_obj, NULL))? -1: 0;
+}
+
+int dlx_error_arr_init(void *lock, uint32_t size, int type_id, char *var_name, char *file, int line) {
   char error_msg[1000];
   sprintf(
     error_msg,
@@ -137,7 +190,7 @@ int dlx_error_arr_init(void *lock, uint32_t size, char *var_name, char *file, in
   return -1;
 }
 
-int dlx_untrack_arr_init(dlx_generic_lock_t *lock, uint32_t num, char *var_name, char *file, int line) {
+int dlx_untrack_arr_init(dlx_generic_lock_t *lock, uint32_t num, int type_id, char *var_name, char *file, int line) {
   for (uint32_t i = 0; i < num; i++) {
     if (lock[i].check_code == 0x32CB00B5)
       continue;
@@ -150,15 +203,18 @@ int dlx_untrack_arr_init(dlx_generic_lock_t *lock, uint32_t num, char *var_name,
     lock[i].methods->unlock_fptr = pthreadmtx_unlock;
     lock[i].methods->destroy_fptr = pthreadmtx_destroy;
     lock[i].methods->cond_timedwait_fptr = pthreadmtx_cond_timedwait;
+    lock[i].ind.pair.type_id = -1;
+    lock[i].ind.pair.ins_id = __sync_fetch_and_add(&g_ins_id, 1);
     lock[i].check_code = 0x32CB00B5;
 
-    if (!lock[i].methods || lock->methods->init_fptr(&lock->lock_obj, NULL))
+    if (!lock[i].methods || lock[i].methods->init_fptr(&lock->lock_obj, NULL))
       return -1;
   }
   return 0;
 }
 
-int dlx_error_enable(void *lock, char *var_name, char *file, int line) {
+int dlx_error_enable(int64_t long_id, void *lock, char *var_name, char *file, int line) {
+// XRAY_ATTR int dlx_error_enable(void *lock, char *var_name, char *file, int line) {
   HANDLING_ERROR(
     "Untrackable lock is trying to enable. Possible cause is\n"
     "_Generic function falls into \'default\' option.\n"
@@ -166,7 +222,8 @@ int dlx_error_enable(void *lock, char *var_name, char *file, int line) {
   return -1;
 }
 
-int dlx_forward_enable(void *lock, char *var_name, char *file, int line) {
+int dlx_forward_enable(int64_t long_id, void *lock, char *var_name, char *file, int line) {
+// XRAY_ATTR int dlx_forward_enable(void *lock, char *var_name, char *file, int line) {
 #ifdef __DYLINX_DEBUG__
   do {
     char log_msg[300];
@@ -177,7 +234,7 @@ int dlx_forward_enable(void *lock, char *var_name, char *file, int line) {
   return mtx->methods->lock_fptr(mtx->lock_obj);
 }
 
-int dlx_error_disable(void *lock, char *var_name, char *file, int line) {
+int dlx_error_disable(int64_t long_id, void *lock, char *var_name, char *file, int line) {
   HANDLING_ERROR(
     "Untrackable lock is trying to unlock. Possible cause is\n"
     "_Generic function falls into \'default\' option.\n"
@@ -185,7 +242,7 @@ int dlx_error_disable(void *lock, char *var_name, char *file, int line) {
   return -1;
 }
 
-int dlx_forward_disable(void *lock, char *var_name, char *file, int line) {
+int dlx_forward_disable(int64_t long_id, void *lock, char *var_name, char *file, int line) {
 #ifdef __DYLINX_DEBUG__
   char log_msg[300];
   printf("[TID %8lu] lock %s located in %s L%4d is disabled\n", syscall(SYS_gettid), var_name, file, line);
@@ -194,7 +251,7 @@ int dlx_forward_disable(void *lock, char *var_name, char *file, int line) {
   return mtx->methods->unlock_fptr(mtx->lock_obj);
 }
 
-int dlx_error_destroy(void *lock) {
+int dlx_error_destroy(int64_t long_id, void *lock) {
   HANDLING_ERROR(
     "Untrackable lock is trying to destroy. Possible cause is\n"
     "_Generic function falls into \'default\' option.\n"
@@ -202,7 +259,7 @@ int dlx_error_destroy(void *lock) {
   return -1;
 }
 
-int dlx_forward_destroy(void *lock) {
+int dlx_forward_destroy(int64_t long_id, void *lock) {
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   mtx->check_code = 0xBADB00B5;
   int ret = mtx->methods->destroy_fptr(mtx->lock_obj);
@@ -210,7 +267,7 @@ int dlx_forward_destroy(void *lock) {
   return ret;
 }
 
-int dlx_error_trylock(void *lock, char *var_name, char *file, int line) {
+int dlx_error_trylock(int64_t long_id, void *lock, char *var_name, char *file, int line) {
   HANDLING_ERROR(
     "Untrackable lock is trying to destroy. Possible cause is\n"
     "_Generic function falls into \'default\' option.\n"
@@ -218,7 +275,7 @@ int dlx_error_trylock(void *lock, char *var_name, char *file, int line) {
   return -1;
 }
 
-int dlx_forward_trylock(void *lock, char *var_name, char *file, int line) {
+int dlx_forward_trylock(int64_t long_id, void *lock, char *var_name, char *file, int line) {
 #ifdef __DYLINX_DEBUG__
   char log_msg[300];
   printf("[TID %8lu] lock %s located in %s L%4d is trying to enabled\n", pthread_self(), var_name, file, line);
@@ -257,93 +314,109 @@ int dlx_forward_cond_timedwait(pthread_cond_t *cond, void *lock, const struct ti
   return mtx->methods->cond_timedwait_fptr(cond, mtx->lock_obj, time);
 }
 
-void *dlx_struct_obj_init(uint32_t cnt, uint32_t unit, uint32_t *offsets, uint32_t n_offset, void **init_funcs, char *file, int line) {
-  char *object = calloc(cnt, unit);
-  if (object) {
-    for (uint32_t c = 0; c < cnt; c++) {
-      for (uint32_t n = 0; n < n_offset; n++) {
-        dlx_generic_lock_t *lock = object + c * unit + offsets[n];
-        int (*init_fptr)(dlx_generic_lock_t *, pthread_mutexattr_t *, char *, char *, int);
-        init_fptr = init_funcs[n];
-        init_fptr(lock, NULL, "forward_from_obj_init", file, line);
-      }
-    }
-    return object;
-  }
-  return NULL;
-}
-
 // Serve every dispatched initialization function call, including
 // normal variable, array and pointer with malloc-like function
 // call.
-#define DLX_LOCK_TEMPLATE_IMPLEMENT(ltype)                                                                    \
-int dlx_ ## ltype ##_var_init(                                                                                \
-  dlx_ ## ltype ## _t *lock,                                                                                  \
-  pthread_mutexattr_t *attr,                                                                                  \
-  char *var_name, char *file, int line                                                                        \
-  ) {                                                                                                         \
-  dlx_generic_lock_t *gen_lock = (dlx_generic_lock_t *)lock;                                                  \
-  if (gen_lock && gen_lock->check_code == 0x32CB00B5)                                                       \
-    return 0;                                                                                                 \
-  gen_lock->methods = calloc(1, sizeof(dlx_injected_interface_t));                                            \
-  gen_lock->methods->init_fptr = ltype ## _init;                                                              \
-  gen_lock->methods->lock_fptr = ltype ## _lock;                                                              \
-  gen_lock->methods->trylock_fptr = ltype ## _trylock;                                                        \
-  gen_lock->methods->unlock_fptr = ltype ## _unlock;                                                          \
-  gen_lock->methods->destroy_fptr = ltype ## _destroy;                                                        \
-  gen_lock->methods->cond_timedwait_fptr = ltype ## _cond_timedwait;                                          \
-  gen_lock->check_code = 0x32CB00B5;                                                                          \
-  if (!gen_lock->methods || gen_lock->methods->init_fptr(&gen_lock->lock_obj, attr)) {                        \
-    printf("Error happens while initializing lock variable %s in %s L%4d\n", var_name, file, line);           \
-    return -1;                                                                                                \
-  }                                                                                                           \
-  return 0;                                                                                                   \
-}                                                                                                             \
-                                                                                                              \
-int dlx_ ## ltype ## _arr_init(                                                                               \
-  dlx_ ## ltype ## _t *head,                                                                                  \
-  uint32_t len,                                                                                               \
-  char *var_name, char *file, int line                                                                        \
-  ) {                                                                                                         \
-  for (int i = 0; i < len; i++) {                                                                             \
-    dlx_generic_lock_t *gen_lock = (dlx_generic_lock_t *)head + i;                                            \
-    gen_lock->methods = calloc(1, sizeof(dlx_injected_interface_t));                                          \
-    gen_lock->methods->init_fptr = ltype ## _init;                                                            \
-    gen_lock->methods->lock_fptr = ltype ## _lock;                                                            \
-    gen_lock->methods->trylock_fptr = ltype ## _trylock;                                                      \
-    gen_lock->methods->unlock_fptr = ltype ## _unlock;                                                        \
-    gen_lock->methods->destroy_fptr = ltype ## _destroy;                                                      \
-    gen_lock->methods->cond_timedwait_fptr = ltype ## _cond_timedwait;                                        \
-    gen_lock->check_code = 0x32CB00B5;                                                                        \
-    if (!gen_lock->methods || gen_lock->methods->init_fptr(&gen_lock->lock_obj, NULL)) {                      \
-      printf("Error happens while initializing lock array %s in %s L%4d\n", var_name, file, line);            \
-      return -1;                                                                                              \
-    }                                                                                                         \
-  }                                                                                                           \
-  return 0;                                                                                                   \
-}                                                                                                             \
-                                                                                                              \
-void *dlx_ ## ltype ## _obj_init(                                                                             \
-  uint32_t cnt,                                                                                               \
-  uint32_t unit,                                                                                              \
-  uint32_t *offsets,                                                                                          \
-  uint32_t n_offset,                                                                                          \
-  void ** init_funcs,                                                                                         \
-  char *file,                                                                                                 \
-  int line                                                                                                    \
-  ) {                                                                                                         \
-  dlx_ ## ltype ## _t *object = calloc(cnt, unit);                                                            \
-  if (object) {                                                                                               \
-    for (uint32_t i = 0; i < cnt; i++) {                                                                      \
-      dlx_ ## ltype ## _var_init(object + i, NULL, file, "forward_from_obj_init", line);                      \
-    }                                                                                                         \
-    return object;                                                                                            \
-  }                                                                                                           \
-  return NULL;                                                                                                \
-}\
-  const dlx_injected_interface_t dlx_ ## ltype ## _methods_collection = {                                              \
-    ltype ## _init, ltype ## _lock, ltype ## _trylock, ltype ## _unlock,                                       \
-    ltype ## _destroy, ltype ## _cond_timedwait                                                                \
+#define DLX_LOCK_TEMPLATE_IMPLEMENT(ltype)                                                                                                           \
+int dlx_ ## ltype ##_var_init(                                                                                                                       \
+  dlx_ ## ltype ## _t *lock,                                                                                                                         \
+  pthread_mutexattr_t *attr,                                                                                                                         \
+  int type_id,                                                                                                                                       \
+  char *var_name, char *file, int line                                                                                                               \
+  ) {                                                                                                                                                \
+  dlx_generic_lock_t *gen_lock = (dlx_generic_lock_t *)lock;                                                                                         \
+  if (gen_lock && gen_lock->check_code == 0x32CB00B5)                                                                                                \
+    return 0;                                                                                                                                        \
+  gen_lock->methods = calloc(1, sizeof(dlx_injected_interface_t));                                                                                   \
+  gen_lock->methods->init_fptr = ltype ## _init;                                                                                                     \
+  gen_lock->methods->lock_fptr = ltype ## _lock;                                                                                                     \
+  gen_lock->methods->trylock_fptr = ltype ## _trylock;                                                                                               \
+  gen_lock->methods->unlock_fptr = ltype ## _unlock;                                                                                                 \
+  gen_lock->methods->destroy_fptr = ltype ## _destroy;                                                                                               \
+  gen_lock->methods->cond_timedwait_fptr = ltype ## _cond_timedwait;                                                                                 \
+  gen_lock->ind.pair.type_id = type_id;                                                                                                                       \
+  gen_lock->ind.pair.ins_id = __sync_fetch_and_add(&g_ins_id, 1);                                                                                             \
+  gen_lock->check_code = 0x32CB00B5;                                                                                                                 \
+  if (!gen_lock->methods || gen_lock->methods->init_fptr(&gen_lock->lock_obj, attr)) {                          \
+    printf("Error happens while initializing lock variable %s in %s L%4d\n", var_name, file, line);                                                  \
+    return -1;                                                                                                                                       \
+  }                                                                                                                                                  \
+  return 0;                                                                                                                                          \
+}                                                                                                                                                    \
+                                                                                                                                                     \
+int dlx_ ## ltype ## _check_init(                                                                                                                    \
+  dlx_ ## ltype ## _t *lock,                                                                                                                         \
+  pthread_mutexattr_t *attr,                                                                                                                         \
+  char *var_name, char *file, int line                                                                                                               \
+  ) {                                                                                                                                                \
+  dlx_generic_lock_t *gen_lock = (dlx_generic_lock_t *)lock;                                                                                         \
+  if (gen_lock && gen_lock->check_code == 0x32CB00B5)                                                                                                \
+    return 0;                                                                                                                                        \
+  printf("[WARNING !!!] Dylinx identifies uninitialized lock instance %s in %s L%4d.\n", var_name, file, line);                                      \
+  gen_lock->methods = calloc(1, sizeof(dlx_injected_interface_t));                                                                                   \
+  gen_lock->methods->init_fptr = ltype ## _init;                                                                                                     \
+  gen_lock->methods->lock_fptr = ltype ## _lock;                                                                                                     \
+  gen_lock->methods->trylock_fptr = ltype ## _trylock;                                                                                               \
+  gen_lock->methods->unlock_fptr = ltype ## _unlock;                                                                                                 \
+  gen_lock->methods->destroy_fptr = ltype ## _destroy;                                                                                               \
+  gen_lock->methods->cond_timedwait_fptr = ltype ## _cond_timedwait;                                                                                 \
+  gen_lock->ind.pair.type_id = -1;                                                                                                                       \
+  gen_lock->ind.pair.ins_id = __sync_fetch_and_add(&g_ins_id, 1);                                                                                             \
+  gen_lock->check_code = 0x32CB00B5;                                                                                                                 \
+  if (!gen_lock->methods || gen_lock->methods->init_fptr(&gen_lock->lock_obj, attr)) {                          \
+    printf("Error happens while initializing lock variable %s in %s L%4d\n", var_name, file, line);                                                  \
+    return -1;                                                                                                                                       \
+  }                                                                                                                                                  \
+  return 0;                                                                                                                                          \
+}                                                                                                                                                    \
+int dlx_ ## ltype ## _arr_init(                                                                                                                      \
+  dlx_ ## ltype ## _t *head,                                                                                                                         \
+  uint32_t len,                                                                                                                                      \
+  int32_t type_id,                                                                                                                                       \
+  char *var_name, char *file, int line                                                                                                               \
+  ) {                                                                                                                                                \
+  for (int i = 0; i < len; i++) {                                                                                                                    \
+    dlx_generic_lock_t *gen_lock = (dlx_generic_lock_t *)head + i;                                                                                   \
+    gen_lock->methods = calloc(1, sizeof(dlx_injected_interface_t));                                                                                 \
+    gen_lock->methods->init_fptr = ltype ## _init;                                                                                                   \
+    gen_lock->methods->lock_fptr = ltype ## _lock;                                                                                                   \
+    gen_lock->methods->trylock_fptr = ltype ## _trylock;                                                                                             \
+    gen_lock->methods->unlock_fptr = ltype ## _unlock;                                                                                               \
+    gen_lock->methods->destroy_fptr = ltype ## _destroy;                                                                                             \
+    gen_lock->methods->cond_timedwait_fptr = ltype ## _cond_timedwait;                                                                               \
+    gen_lock->ind.pair.type_id = type_id;                                                                                                                     \
+    gen_lock->ind.pair.ins_id = __sync_fetch_and_add(&g_ins_id, 1);                                                                                           \
+    gen_lock->check_code = 0x32CB00B5;                                                                                                               \
+    if (!gen_lock->methods || gen_lock->methods->init_fptr(&gen_lock->lock_obj, NULL)) {                        \
+      printf("Error happens while initializing lock array %s in %s L%4d\n", var_name, file, line);                                                   \
+      return -1;                                                                                                                                     \
+    }                                                                                                                                                \
+  }                                                                                                                                                  \
+  return 0;                                                                                                                                          \
+}                                                                                                                                                    \
+                                                                                                                                                     \
+void *dlx_ ## ltype ## _obj_init(                                                                                                                    \
+  uint32_t cnt,                                                                                                                                      \
+  uint32_t unit,                                                                                                                                     \
+  uint32_t *offsets,                                                                                                                                 \
+  uint32_t n_offset,                                                                                                                                 \
+  void **init_funcs,                                                                                                                                 \
+  int *type_ptr,                                                                                                                                     \
+  char *file,                                                                                                                                        \
+  int line                                                                                                                                           \
+  ) {                                                                                                                                                \
+  dlx_ ## ltype ## _t *object = calloc(cnt, unit);                                                                                                   \
+  if (object) {                                                                                                                                      \
+    for (uint32_t i = 0; i < cnt; i++) {                                                                                                             \
+      dlx_ ## ltype ## _var_init(object + i, NULL, *type_ptr, file, "forward_from_obj_init", line);                                                  \
+    }                                                                                                                                                \
+    return object;                                                                                                                                   \
+  }                                                                                                                                                  \
+  return NULL;                                                                                                                                       \
+}                                                                                                                                                    \
+  const dlx_injected_interface_t dlx_ ## ltype ## _methods_collection = {                                                                            \
+    ltype ## _init, ltype ## _lock, ltype ## _trylock, ltype ## _unlock,                                                                             \
+    ltype ## _destroy, ltype ## _cond_timedwait                                                                                                      \
   };
 
 #define DLX_IMPLEMENT_EACH_LOCK(...) FOR_EACH(DLX_LOCK_TEMPLATE_IMPLEMENT, __VA_ARGS__)
