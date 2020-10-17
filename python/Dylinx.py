@@ -190,7 +190,6 @@ class NaiveSubject:
         os.chdir(str(pathlib.PurePath(self.cc_path).parent))
         os.environ["C_INCLUDE_PATH"] = ":".join([f"{self.home_path}/src/glue", "/usr/local/lib/clang/10.0.0/include", f"{self.glue_dir}/glue"])
         os.environ["LIBRARY_PATH"] = ":".join([f"{self.home_path}/build/lib", f"{self.glue_dir}/lib"])
-        sys.exit()
         with subprocess.Popen(self.build_inst, stdout=subprocess.PIPE, shell=True) as proc:
             logging.debug(proc.stdout.read().decode("utf-8"))
         return comb

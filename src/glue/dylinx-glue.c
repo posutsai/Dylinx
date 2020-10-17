@@ -3,6 +3,7 @@
 #include "lock/ttas-lock.h"
 #include "lock/backoff-lock.h"
 #include "lock/pthreadmtx-lock.h"
+#include "lock/adaptivemtx-lock.h"
 #include <errno.h>
 #include <string.h>
 #include <syscall.h>

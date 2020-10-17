@@ -27,7 +27,6 @@
 
 typedef struct ttas_lock {
   volatile uint8_t spin_lock __attribute__((aligned(L_CACHE_LINE_SIZE)));
-  char __pad[pad_to_cache_line(sizeof(uint8_t))];
   pthread_mutex_t posix_lock;
 } ttas_lock_t __attribute__((aligned(L_CACHE_LINE_SIZE)));
 
@@ -39,14 +38,13 @@ typedef struct ttas_lock {
 //    {UNLOCKED=1, LOCKED-1, 255}
 
 int ttas_init(void **entity, pthread_mutexattr_t *attr) {
-#ifdef __DYLINX_DEBUG__
-  printf("ttas-lock is initialized !!!\n");
-#endif
-  // *entity = (ttas_lock_t *)alloc_cache_align(sizeof(ttas_lock_t));
-  *entity = (ttas_lock_t *)malloc(sizeof(ttas_lock_t));
+  *entity = (ttas_lock_t *)alloc_cache_align(sizeof(ttas_lock_t));
   ttas_lock_t *mtx = *entity;
   mtx->spin_lock = UNLOCKED;
   pthread_mutex_init_original(&mtx->posix_lock, attr);
+#ifdef __DYLINX_DEBUG__
+  printf("ttas-lock is initialized !!!\n");
+#endif
   return 0;
 }
 
@@ -66,7 +64,17 @@ int ttas_lock(void *entity) {
   return 0;
 }
 
-int ttas_trylock(void *entity) {}
+int ttas_trylock(void *entity) {
+  ttas_lock_t *mtx = entity;
+  if (l_tas_uint8(&mtx->spin_lock) == UNLOCKED) {
+    int ret;
+    while ((ret = pthread_mutex_trylock_original(&mtx->posix_lock)) == EBUSY)
+      CPU_PAUSE();
+    assert(ret == 0);
+    return 0;
+  }
+  return EBUSY;
+}
 
 int __ttas_unlock(void *entity) {
   COMPILER_BARRIER();
@@ -91,20 +99,25 @@ int ttas_destroy(void *entity) {
 #endif
   ttas_lock_t *mtx = entity;
   int ret = pthread_mutex_destroy_original(&mtx->posix_lock);
-  assert(ret == 0);
   free(mtx);
-  return 1;
+  return ret;
 }
 
 int ttas_cond_timedwait(pthread_cond_t *cond, void *entity, const struct timespec *time) {
   int res;
   __ttas_unlock(entity);
   ttas_lock_t *mtx = entity;
-  res = pthread_cond_wait_original(cond, &mtx->posix_lock);
+
+  if (time)
+    res = pthread_cond_timedwait_original(cond, &mtx->posix_lock, time);
+  else
+    res = pthread_cond_wait_original(cond, &mtx->posix_lock);
+
   if (res != 0 && res != ETIMEDOUT) {
     HANDLING_ERROR(
       "Error happens when trying to conduct "
       "pthread_cond_wait on internal posix_lock"
+      "in a ttas_lock"
     );
   }
   int ret = 0;
