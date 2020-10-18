@@ -1,15 +1,7 @@
 #include <string>
 #include <vector>
 
-// When trying to add a new type of lock,
-// one should manually appending lock and
-// the corresponding string here.
-#define X(attr, str) str
-#define LOCK_LIST                         \
-  X(ttas, "TTAS"),                        \
-  X(pthreadmtx, "PTHREADMTX"),            \
-  X(backoff, "BACKOFF"),                  \
-  X(spinlock, "SPINLOCK")
+#define LOCK_LIST "TTAS", "PTHREADMTX", "BACKOFF", "ADAPTIVEMTX", "MCS", "CBOMCS"
 
 std::string getLockPattern() {
   std::vector<std::string> locks { LOCK_LIST };

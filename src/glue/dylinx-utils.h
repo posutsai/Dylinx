@@ -48,6 +48,16 @@ static inline uint8_t l_tas_uint8(volatile uint8_t *addr) {
   return (uint8_t)oldval;
 }
 
+static inline void *xchg_64(void *ptr, void *x) {
+  __asm__ __volatile__("xchgq %0,%1"
+    : "=r"(x)
+    : "m"(*(volatile long long *)ptr),
+      "0"((unsigned long long)x)
+    : "memory");
+
+  return x;
+}
+
 #define COMPILER_BARRIER() __asm__ __volatile__("" : : : "memory")
 
 #endif

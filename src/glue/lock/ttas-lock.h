@@ -121,7 +121,7 @@ int ttas_cond_timedwait(pthread_cond_t *cond, void *entity, const struct timespe
     );
   }
   int ret = 0;
-  if (ret = pthread_mutex_unlock_original(&mtx->posix_lock) != 0) {
+  if ((ret = pthread_mutex_unlock_original(&mtx->posix_lock)) != 0) {
     HANDLING_ERROR(
       "Error happens when trying to conduct "
       "pthread_mutex_unlock on internal posix_lock"

@@ -4,6 +4,7 @@
 #include "lock/backoff-lock.h"
 #include "lock/pthreadmtx-lock.h"
 #include "lock/adaptivemtx-lock.h"
+#include "lock/mcs-lock.h"
 #include <errno.h>
 #include <string.h>
 #include <syscall.h>

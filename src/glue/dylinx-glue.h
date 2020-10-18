@@ -38,7 +38,7 @@
 #define XRAY_ATTR                                                                 \
   __attribute__((xray_always_instrument))                                         \
   __attribute__((xray_log_args(2)))
-#define ALLOWED_LOCK_TYPE pthreadmtx, ttas, backoff, adaptivemtx
+#define ALLOWED_LOCK_TYPE pthreadmtx, ttas, backoff, adaptivemtx, mcs
 #define LOCK_TYPE_LIMIT 10
 #define DYLINX_LOCK_TO_TYPE(lock) dlx_ ## lock ## _t
 #define DYLINX_LOCK_TO_INIT_METHOD
@@ -138,10 +138,8 @@ static int (*native_cond_timedwait)(pthread_cond_t *, pthread_mutex_t *, const s
   int ltype ## _cond_timedwait(pthread_cond_t *, void *, const struct timespec *);                             \
   extern const dlx_injected_interface_t dlx_ ## ltype ## _methods_collection;
 
-DLX_LOCK_TEMPLATE_PROTOTYPE(ttas)
-DLX_LOCK_TEMPLATE_PROTOTYPE(backoff)
-DLX_LOCK_TEMPLATE_PROTOTYPE(pthreadmtx)
-DLX_LOCK_TEMPLATE_PROTOTYPE(adaptivemtx)
+#define DLX_LOCK_TEMPLATE_PROTOTYPE_LIST(...) FOR_EACH(DLX_LOCK_TEMPLATE_PROTOTYPE, __VA_ARGS__)
+DLX_LOCK_TEMPLATE_PROTOTYPE_LIST(ALLOWED_LOCK_TYPE)
 
 // For debugging and tracking purpose, we add the last three function argument.
 int dlx_untrack_var_init(dlx_generic_lock_t *, const pthread_mutexattr_t *, int type_id, char *var_name, char *file, int line);
