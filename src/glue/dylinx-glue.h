@@ -216,7 +216,7 @@ extern uint32_t g_ins_id;
   DLX_GENERIC_ENABLE_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                             \
   dlx_generic_lock_t *: dlx_forward_enable,                                                                   \
   default: dlx_error_enable                                                                                   \
-)((entity)->interface.ind.long_id, entity, #entity, __FILE__, __LINE__)
+)(((dlx_generic_lock_t *)entity)->ind.long_id, entity, #entity, __FILE__, __LINE__)
 
 #define DLX_GENERIC_DISABLE_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_disable,
 #define DLX_GENERIC_DISABLE_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_DISABLE_TYPE_REDIRECT, __VA_ARGS__)
@@ -224,7 +224,7 @@ extern uint32_t g_ins_id;
   DLX_GENERIC_DISABLE_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
   dlx_generic_lock_t *: dlx_forward_disable,                                                                  \
   default: dlx_error_disable                                                                                  \
-)((entity)->interface.ind.long_id, entity, #entity, __FILE__, __LINE__)
+)(((dlx_generic_lock_t *)entity)->ind.long_id, entity, #entity, __FILE__, __LINE__)
 
 #define DLX_GENERIC_DESTROY_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_destroy,
 #define DLX_GENERIC_DESTROY_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_DESTROY_TYPE_REDIRECT, __VA_ARGS__)
@@ -232,7 +232,7 @@ extern uint32_t g_ins_id;
   DLX_GENERIC_DESTROY_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
   dlx_generic_lock_t *: dlx_forward_destroy,                                                                  \
   default: dlx_error_destroy                                                                                  \
-)((entity)->interface.ind.long_id, entity)
+)(((dlx_generic_lock_t *)entity)->ind.long_id, entity)
 
 #define DLX_GENERIC_TRYLOCK_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_trylock,
 #define DLX_GENERIC_TRYLOCK_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_TRYLOCK_TYPE_REDIRECT, __VA_ARGS__)
@@ -240,7 +240,7 @@ extern uint32_t g_ins_id;
   DLX_GENERIC_TRYLOCK_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                           \
   dlx_generic_lock_t *: dlx_forward_trylock,                                                                 \
   default: dlx_error_trylock                                                                                 \
-)((entity)->interface.ind.long_id, entity, #entity, __FILE__, __LINE__)
+)(((dlx_generic_lock_t *)entity)->ind.long_id, entity, #entity, __FILE__, __LINE__)
 
 #define DLX_GENERIC_COND_WAIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_cond_wait,
 #define DLX_GENERIC_COND_WAIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_COND_WAIT_TYPE_REDIRECT, __VA_ARGS__)

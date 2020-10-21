@@ -52,7 +52,7 @@ int backoff_trylock(void *entity) {
   backoff_lock_t *mtx = entity;
   if (l_tas_uint8(&mtx->spin_lock) == UNLOCKED) {
     int ret = 0;
-    while ((ret = pthread_mutex_try_original(&mtx->posix_lock)) == EBUSY)
+    while ((ret = pthread_mutex_trylock_original(&mtx->posix_lock)) == EBUSY)
       CPU_PAUSE();
     assert(ret == 0);
     return 0;

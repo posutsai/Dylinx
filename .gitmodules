@@ -1,3 +1,9 @@
 [submodule "sample/database/memcached"]
-	path = sample/database/memcached
+	path = sample/memcached/repo
 	url = git@github.com:memcached/memcached.git
+[submodule "sample/synchrobrench/repo"]
+	path = sample/synchrobench/repo
+	url = git@github.com:gramoli/synchrobench.git
+[submodule "sample/cpython/repo"]
+	path = sample/cpython/repo
+	url = git@github.com:python/cpython.git

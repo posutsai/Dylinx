@@ -98,7 +98,7 @@ int mcs_destroy(void *entity) {
 int mcs_cond_timedwait(pthread_cond_t *cond, void *entity, const struct timespec *time) {
   mcs_lock_t *mtx = entity;
   int res;
-  __mcs_mutex_unlock(mtx);
+  __mcs_unlock(mtx);
   if (time)
     res = pthread_cond_timedwait_original(cond, &mtx->posix_lock, time);
   else

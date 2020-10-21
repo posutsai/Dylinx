@@ -1,0 +1,6 @@
+compile_commands: ${DYLINX_HOME}/sample/synchrobench/repo/c-cpp/compile_commands.json
+output_directory: ${DYLINX_HOME}/sample/synchrobench
+instructions:
+  - build: "cd $DYLINX_HOME/sample/synchrobench/repo/c-cpp; CC=clang make -e src/skiplists/skiplist-lock"
+  - clean: "cd $DYLINX_HOME/sample/synchrobench/repo/c-cpp; make clean"
+  - execute: "cd $DYLINX_HOME/sample/synchrobench/repo/c-cpp; ./bin/MUTEX-skiplist"

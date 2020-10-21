@@ -6,8 +6,9 @@ import itertools
 import logging
 import subprocess
 import pathlib
-from flask import request, jsonify, Blueprint
-import requests
+import abc
+
+ALLOWED_LOCK_TYPE = ["PTHREADMTX", "ADAPTIVEMTX", "TTAS", "BACKOFF", "TICKET", "MCS"]
 
 def var_macro_handler(i, id2type, entities, content):
     ltype = id2type[i]
@@ -64,8 +65,6 @@ def struct_alloc_handler(i, id2type, entities, content):
     content.append(f"#define DYLINX_LOCK_INIT_{entity['id']} {init_methods}")
     content.append(f"#define DYLINX_LOCK_OBJ_INDICATOR_{entity['id']} {id_str}")
 
-
-
 def extern_symbol_handler(i, id2type, entities, content):
     def locate_var_decl(name):
         for i, e in entities.items():
@@ -81,8 +80,23 @@ def extern_symbol_handler(i, id2type, entities, content):
     else:
         content.append(f"#define DYLINX_LOCK_TYPE_{entity['id']} dlx_pthreadmtx_t")
 
-class NaiveSubject:
-    def __init__(self, config_path, verbose=logging.DEBUG, insertion=True, fix=False, include_posix=True):
+class BaseSubject(metaclass=abc.ABCMeta):
+    def __init__(self, cc_path, out_dir=None, verbose=logging.DEBUG):
+        # Initializing class required attribute and environment variable
+        self.logger = logging.getLogger("dylinx_logger")
+        self.logger.setLevel(verbose)
+        self.cc_path = cc_path
+        self.glue_dir = os.path.abspath(os.path.dirname(self.cc_path) + "/.dylinx")
+        if out_dir == None:
+            self.out_dir = os.getcwd()
+        else:
+            self.out_dir = out_dir
+        self.home_path = os.environ["DYLINX_HOME"]
+        self.executable = f"{self.home_path}/build/bin/dylinx"
+        with subprocess.Popen(args=['clang', '-dumpversion'], stdout=subprocess.PIPE, universal_newlines=True) as proc:
+            clang_ver = proc.stdout.read().replace('\n', '')
+        os.environ["C_INCLUDE_PATH"] = ":".join([f"{self.home_path}/src/glue", f"/usr/local/lib/clang/{clang_ver}/include", f"{self.glue_dir}/glue"])
+
         self.init_mapping = {
             "VARIABLE": var_macro_handler,
             "ARRAY": arr_macro_handler,
@@ -92,35 +106,14 @@ class NaiveSubject:
             "EXTERN_ARR_SYMBOL": extern_symbol_handler,
             "STRUCT_MEM_ALLOCATION": struct_alloc_handler
         }
-        self.logger = logging.getLogger("dylinx_logger")
-        self.logger.setLevel(verbose)
-        with open(config_path, "r") as yaml_file:
-            conf = list(yaml.load_all(yaml_file, Loader=yaml.FullLoader))[0]
-            self.cc_path = os.path.expandvars(conf["compile_commands"])
-            os.chdir(os.path.dirname(os.path.expandvars(conf["compile_commands"])))
-            self.glue_dir = os.path.dirname(self.cc_path) + "/.dylinx"
-            self.out_dir = os.path.expandvars(conf["output_directory"])
-            self.build_inst = conf["instructions"][0]["build"]
-            self.clean_inst = conf["instructions"][1]["clean"]
-            self.execu_inst = conf["instructions"][2]["execute"]
-        self.home_path = os.environ["DYLINX_HOME"]
-        self.executable = f"{self.home_path}/build/bin/dylinx"
-        os.environ["C_INCLUDE_PATH"] = ":".join([f"{self.home_path}/src/glue", "/usr/local/lib/clang/10.0.0/include", f"{self.glue_dir}/glue"])
         self.inject_symbol()
         with open(f"{self.out_dir}/dylinx-insertion.yaml", "r") as stream:
             meta = list(yaml.load_all(stream, Loader=yaml.FullLoader))[0]
         self.permutation = []
-        validity = list(self.filter_valid(meta["LockEntity"]))
-        for m in validity:
-            init = [("PTHREADMTX", m["id"])] if include_posix else []
-            parsed_comb = m.get("lock_combination", [])
-            parsed_comb = [] if parsed_comb is None else parsed_comb
-            comb = set([*init, *parsed_comb])
-            if len(comb) == 0:
-                raise ValueError("lock_combination shouldn't be empty")
-            self.permutation.append(comb)
-
-        self.permutation = list(itertools.product(*self.permutation))
+        slots = list(self.filter_valid(meta["LockEntity"]))
+        self.pluggable_sites = {}
+        for m in slots:
+            self.pluggable_sites[m['id']] = m["lock_combination"] if m.get("lock_combination", None) else []
 
         # Generate content for dylinx-runtime-init.c
         init_cu = set()
@@ -142,7 +135,6 @@ class NaiveSubject:
             code = code + "}\n"
             rt_code.write(code)
         cmd = f"""
-            cd {self.glue_dir}/glue;
             clang -c {self.glue_dir}/glue/dylinx-runtime-init.c -o {self.glue_dir}/lib/dylinx-runtime-init.o -I{self.home_path}/src/glue -I.;
             ar rcs -o {self.glue_dir}/lib/libdlx-init.a {self.glue_dir}/lib/dylinx-runtime-init.o;
             /bin/rm -f {self.glue_dir}/lib/dylinx-runtime-init.o
@@ -165,20 +157,17 @@ class NaiveSubject:
             out = proc.stdout.read().decode("utf-8")
             logging.debug(out)
 
-    def get_num_perm(self):
-        return len(self.permutation)
+    def get_pluggable(self):
+        return self.pluggable_sites
 
-    def step(self, n_comb):
-
+    def configure_type(self, id2type):
+        id2type = {int(k): v for k,v in id2type.items()}
         header_start = (
             "#ifndef __DYLINX_ITERATE_LOCK_COMB__\n"
             "#define __DYLINX_ITERATE_LOCK_COMB__\n"
             "void __dylinx_global_mtx_init_();\n"
         )
         header_end = "\n#endif // __DYLINX_ITERATE_LOCK_COMB__\n"
-
-        comb = self.permutation[n_comb]
-        id2type = { c[1]: c[0] for c in comb }
         macro_defs = []
         for cu_id in self.extra_init_cu:
             macro_defs.append(f"void __dylinx_cu_init_{cu_id}_(void);")
@@ -187,43 +176,19 @@ class NaiveSubject:
         with open(f"{self.glue_dir}/glue/dylinx-runtime-config.h", "w") as rt_config:
             content = '\n'.join(macro_defs)
             rt_config.write(f"{header_start}\n{content}\n{header_end}")
-        os.chdir(str(pathlib.PurePath(self.cc_path).parent))
+        # os.chdir(str(pathlib.PurePath(self.cc_path).parent))
         os.environ["C_INCLUDE_PATH"] = ":".join([f"{self.home_path}/src/glue", "/usr/local/lib/clang/10.0.0/include", f"{self.glue_dir}/glue"])
         os.environ["LIBRARY_PATH"] = ":".join([f"{self.home_path}/build/lib", f"{self.glue_dir}/lib"])
-        with subprocess.Popen(self.build_inst, stdout=subprocess.PIPE, shell=True) as proc:
-            logging.debug(proc.stdout.read().decode("utf-8"))
-        return comb
 
-    def execute(self):
-        with subprocess.Popen(self.execu_inst, stdout=subprocess.PIPE, shell=True) as proc:
-            logging.debug(proc.stdout.read().decode("utf-8"))
+    @abc.abstractmethod
+    def build_repo(self):
+        return NotImplemented
 
-def blueprint_gen():
+    @abc.abstractmethod
+    def execute_repo(self):
+        return NotImplemented
 
-    DylinxBlueprint = Blueprint("Dylinx", "Dylinx")
-
-    @DylinxBlueprint.route("/init", methods=["POST"])
-    def init():
-        global instance
-        Cls = getattr(sys.modules[request.json["mod"]], request.json["cls"])
-        instance = Cls(request.json["config_path"])
-        return jsonify({"error_code": 0})
-
-    @DylinxBlueprint.route("/perm", methods=["GET"])
-    def get_permutations():
-        global instance
-        return jsonify({
-            "error_code": 0,
-            "permutation": instance.permutation
-        })
-
-    @DylinxBlueprint.route("/step/<it>", methods=["GET"])
-    def step(it):
-        global instance
-        instance.step(int(it))
-        return jsonify({
-            "error_code": 0,
-        })
-    i
-    return DylinxBlueprint
+    @abc.abstractmethod
+    def stop_repo(self):
+        return NotImplemented
 

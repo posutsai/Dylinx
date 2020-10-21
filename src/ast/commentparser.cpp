@@ -1157,24 +1157,24 @@ public:
       ).bind("struct_instance"),
       &handler_for_initlist
     );
-
-    matcher.addMatcher(
-      callExpr(
-        callee(functionDecl(hasName("pthread_mutex_init"))),
-        hasArgument(0, hasDescendant(declRefExpr(
-          hasType(qualType(
-            hasDeclaration(anyOf(
-              recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t"))))),
-              typedefDecl(hasType(qualType(hasDeclaration(
-                recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))
-              ))))
-            ))
-          ))
-        )))
-      ).bind("member_init_call"),
-      &handler_for_member_init
-    );
-
+    //
+    // matcher.addMatcher(
+    //   callExpr(
+    //     callee(functionDecl(hasName("pthread_mutex_init"))),
+    //     hasArgument(0, hasDescendant(declRefExpr(
+    //       hasType(qualType(
+    //         hasDeclaration(anyOf(
+    //           recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t"))))),
+    //           typedefDecl(hasType(qualType(hasDeclaration(
+    //             recordDecl(has(fieldDecl(hasType(asString("pthread_mutex_t")))))
+    //           ))))
+    //         ))
+    //       ))
+    //     )))
+    //   ).bind("member_init_call"),
+    //   &handler_for_member_init
+    // );
+    //
     matcher.addMatcher(
       functionDecl(hasName("main")).bind("entry"),
       &handler_for_entry
