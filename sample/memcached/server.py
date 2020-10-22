@@ -18,29 +18,24 @@ class DylinxSubject(BaseSubject):
 
     def build_repo(self, id2type):
         super().configure_type(id2type)
-        print(os.environ["C_INCLUDE_PATH"])
         cmd = f"cd repo; make -f dylinx.mk memcached-dlx"
-        with subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            shell=True
-        ) as proc:
-            print(proc.stdout.read().decode("utf-8"))
-        self.memcached_pid = -1
+        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
+        err_msg = proc.stderr.read().decode("utf-8")
+        if len(err_msg) != 0:
+            print(err_msg)
 
-    async def execute_repo(self):
+    def execute_repo(self):
         os.environ["LD_LIBRARY_PATH"] = ":".join([
             f"{self.repo}/.dylinx/lib",
             f"{self.home_path}/build/lib"
         ])
-        create = asyncio.create_subprocess_exec(
-            f"{self.repo}/memcached-dlx", "-c", "100000", "-l", "0.0.0.0", "-t", "16", "-u", "root",
-            stdout=asyncio.subprocess.PIPE
+        self.task = subprocess.Popen(
+            [f"{self.repo}/memcached-dlx", "-c", "100000", "-l", "0.0.0.0", "-t", "16"],
+            bufsize=0
         )
-        self.task = await create
 
     def stop_repo(self):
-        self.task.send_signal(signal.SIGKILL)
+        self.task.kill()
 
 async def init_subject(request):
     global subject
@@ -54,10 +49,9 @@ async def set_subject(request):
     global subject
     param = await request.json()
     subject.build_repo(param["slots"])
-    await subject.execute_repo()
+    subject.execute_repo()
     return web.json_response({
         "err": 0,
-        "pid": subject.task.pid
     })
 
 async def stop_subject(request):
