@@ -19,8 +19,9 @@ def run(args):
             f'{os.environ["DYLINX_DOMAIN"]}:8787/set',
             json={ "slots": { int(s): args.ltype for s in sites.keys() } }
         )
-        if res.ok:
-            print(res.json())
+        print(res.json())
+        res = requests.get(f"{os.environ['DYLINX_DOMAIN']}:8787/stop")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
