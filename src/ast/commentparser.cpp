@@ -841,38 +841,34 @@ public:
         sm.getSpellingLineNumber(type_loc)
       );
 
+      SourceLocation init_call = d->getEndLoc().getLocWithOffset(var_name.length() + 1);
+      if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
+        const Token *var_token = move2n_token(d->getTypeSpecStartLoc(), 2, sm, result.Context->getLangOpts());
+        Dylinx::Instance().rw_ptr->RemoveText(
+          SourceRange(
+            var_token->getLocation(),
+            sm.getExpansionRange(init_expr->getBeginLoc()).getEnd()
+          )
+        );
+        init_call = move2n_token(d->getTypeSpecStartLoc(), 4, sm, result.Context->getLangOpts())->getLocation().getLocWithOffset(1);
+      }
+
       // Dealing with initialization
       if (!d->isStaticLocal() && d->hasGlobalStorage()) {
-        // Global variable requires extra init.
-        const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro");
-        const Token *var_token = move2n_token(d->getTypeSpecStartLoc(), 2, sm, result.Context->getLangOpts());
-        if (init_expr) {
-          Dylinx::Instance().rw_ptr->RemoveText(
-            SourceRange(
-              var_token->getLocation(),
-              sm.getImmediateExpansionRange(init_expr->getBeginLoc()).getEnd()
-            )
-          );
-        }
         if (cur_type != pre_type)
           meta["extra_init"] = true;
-
-      } else if (const InitListExpr *init_expr = result.Nodes.getNodeAs<InitListExpr>("init_macro")) {
-
-        char format[100];
-        sprintf(format, "DYLINX_LOCK_INIT_%d", stash_id);
-        Dylinx::Instance().rw_ptr->ReplaceText(
-          sm.getImmediateExpansionRange(init_expr->getBeginLoc()).getAsRange(),
-          format
-        );
-        meta["define_init"] = true;
-
       } else {
         // User doesn't specify initlist.
         char format[50];
-        sprintf(format, " = DYLINX_LOCK_INIT_%d", stash_id);
+        sprintf(
+          format,
+          "__dylinx_member_init_(&%s, NULL, %d);\n",
+          var_name.c_str(),
+          stash_id
+        );
         Dylinx::Instance().rw_ptr->InsertTextAfter(
-          d->getEndLoc().getLocWithOffset(var_name.length()),
+          init_call,
+          // d->getEndLoc().getLocWithOffset(var_name.length() + 1),
           format
         );
         meta["define_init"] = true;
