@@ -27,7 +27,7 @@ class DylinxSubject(BaseSubject):
     def execute_repo(self):
         os.environ["LD_LIBRARY_PATH"] = ":".join([
             f"{self.repo}/.dylinx/lib",
-            f"{self.home_path}/build/lib"
+            f"{os.environ['DYLINX_HOME']}/build/lib"
         ])
         self.task = subprocess.Popen(
             [f"{self.repo}/memcached-dlx", "-c", "100000", "-l", "0.0.0.0", "-t", "16"],

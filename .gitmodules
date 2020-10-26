@@ -1,4 +1,4 @@
-[submodule "sample/database/memcached"]
+[submodule "sample/database/repo"]
 	path = sample/memcached/repo
 	url = git@github.com:memcached/memcached.git
 [submodule "sample/synchrobrench/repo"]
