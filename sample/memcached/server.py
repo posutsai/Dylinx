@@ -6,6 +6,7 @@ import subprocess
 import asyncio
 from aiohttp import web
 import signal
+import time
 
 if f"{os.environ['DYLINX_HOME']}/python" not in sys.path:
     sys.path.append(f"{os.environ['DYLINX_HOME']}/python")
@@ -30,9 +31,10 @@ class DylinxSubject(BaseSubject):
             f"{os.environ['DYLINX_HOME']}/build/lib"
         ])
         self.task = subprocess.Popen(
-            [f"{self.repo}/memcached-dlx", "-c", "100000", "-l", "0.0.0.0", "-t", "16"],
+            [f"{self.repo}/memcached-dlx", "-c", "100000", "-l", "0.0.0.0", "-t", "64"],
             bufsize=0
         )
+        time.sleep(3)
 
     def stop_repo(self):
         self.task.kill()
@@ -47,6 +49,7 @@ async def init_subject(request):
 
 async def set_subject(request):
     global subject
+    print("set memcached...")
     param = await request.json()
     subject.build_repo(param["slots"])
     subject.execute_repo()
@@ -57,6 +60,7 @@ async def set_subject(request):
 async def stop_subject(request):
     global subject
     subject.stop_repo()
+    print("stop memcached...")
     return web.json_response({
         "err": 0
     })

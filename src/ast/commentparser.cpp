@@ -47,14 +47,17 @@
 #define STRUCT_MEM_ALLOCATION "STRUCT_MEM_ALLOCATION"
 #define DEBUG_LOG(pattern, ins, sm)  \
   do {                      \
-    SourceLocation matched_loc = ins->getBeginLoc();  \
-    FileID src_id = sm.getFileID(matched_loc); \
-    printf( \
-      "[ LOG FIND ] %20s L%5d:%4d, %s\n", \
-      #pattern, sm.getSpellingLineNumber(matched_loc),\
-      sm.getSpellingColumnNumber(matched_loc), \
-      sm.getFileEntryForID(src_id)->getName().str().c_str() \
-    ); \
+    if (ins) {\
+      SourceLocation matched_loc = sm.getFileLoc(ins->getBeginLoc());  \
+      FileID src_id = sm.getFileID(matched_loc); \
+      const FileEntry *fentry = sm.getFileEntryForID(src_id);\
+      printf( \
+        "[ LOG FIND ] %20s L%5d:%4d, %s\n", \
+        #pattern, sm.getSpellingLineNumber(matched_loc),\
+        sm.getSpellingColumnNumber(matched_loc), \
+        fentry? fentry->getName().str().c_str(): "invalid FileEntry"\
+      ); \
+    }\
   } while(0)
 
 using namespace clang;
@@ -161,7 +164,7 @@ void traverse_init_fields_with_name(
     }
     else if (type_name == "pthread_mutex_t") {
       std::string prefix = "";
-      SourceLocation begin_loc = iter->getBeginLoc();
+      SourceLocation begin_loc = sm.getFileLoc(iter->getBeginLoc());
       const FileEntry *fentry = sm.getFileEntryForID(sm.getFileID(begin_loc));
       for (auto el = field_seq.begin(); el != field_seq.end(); el++)
         prefix = prefix + std::string(".") + *el;
@@ -306,10 +309,11 @@ public:
     }
     meta["name"] = ref_name;
     meta["pointee_type"] = arg_type.getAsString();
-    FileID src_id = sm.getFileID(sm.getSpellingLoc(begin_loc));
+    FileID src_id = sm.getFileID(sm.getFileLoc(begin_loc));
+    const FileEntry *fentry = sm.getFileEntryForID(src_id);
     if (src_id.isInvalid() || sm.isInSystemHeader(begin_loc))
       return;
-    fs::path src_path = sm.getFileEntryForID(src_id)->getName().str();
+    fs::path src_path = fentry->getName().str();
     EntityID uid = std::make_tuple(
       src_path,
       sm.getSpellingLineNumber(begin_loc),
@@ -338,6 +342,9 @@ public:
     if (const UnaryExprOrTypeTraitExpr *sizeof_expr = result.Nodes.getNodeAs<UnaryExprOrTypeTraitExpr>("sizeofExpr")) {
       std::vector<std::tuple<uint64_t, std::string, uint32_t, uint32_t>> init_params;
       if (arg_type.getAsString() == "pthread_mutex_t") {
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(MallocMutex, vd, sm);
+#endif
         Dylinx::Instance().rw_ptr->ReplaceText(
           SourceRange(
             sizeof_expr->getRParenLoc().getLocWithOffset(
@@ -349,6 +356,9 @@ public:
         );
         meta["modification_type"] = MUTEX_MEM_ALLOCATION;
       } else {
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(MallocStruct, vd, sm);
+#endif
         uint64_t cur_offset = 0; // offset unit is bit instead of byte.
         traverse_init_fields_with_offset(
           arg_type->getUnqualifiedDesugaredType()->getAsRecordDecl(),
@@ -583,12 +593,12 @@ public:
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(StructField, fd, sm);
 #endif
-      if (sm.isInSystemHeader(fd->getBeginLoc()))
-        return;
       YAML::Node decl_loc;
-      SourceLocation begin_loc = fd->getBeginLoc();
+      SourceLocation begin_loc = sm.getFileLoc(fd->getBeginLoc());
       FileID src_id = sm.getFileID(begin_loc);
       const FileEntry *fentry = sm.getFileEntryForID(src_id);
+      if (sm.isInSystemHeader(fd->getBeginLoc()))
+        return;
       decl_loc["fentry_uid"] = fentry->getUID();
       fs::path src_path = fentry->getName().str();
       EntityID uid = std::make_tuple(
@@ -605,15 +615,24 @@ public:
       decl_loc["field_name"] = field_name;
       char format[50];
       sprintf(format, "DYLINX_LOCK_TYPE_%d", Dylinx::Instance().lock_i);
-      Dylinx::Instance().rw_ptr->ReplaceText(
-        SourceRange(fd->getTypeSpecStartLoc(), fd->getTypeSpecEndLoc()),
-        format
-      );
+      const SourceLocation type_start = fd->getTypeSpecStartLoc();
+      if (type_start.isMacroID()) {
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          sm.getImmediateExpansionRange(type_start).getAsRange(),
+          format
+        );
+      }
+      else {
+        Dylinx::Instance().rw_ptr->ReplaceText(
+          SourceRange(type_start, fd->getTypeSpecEndLoc()),
+          format
+        );
+      }
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(fd)) {
         decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
       }
       decl_loc["modification_type"] = FIELD_INSERT;
-      decl_loc["fentry_uid"] = sm.getFileEntryForID(src_id)->getUID();
+      decl_loc["fentry_uid"] = fentry->getUID();
       save2metas(uid, decl_loc, src_id, sm);
       save2altered_list(src_id, sm);
     }
@@ -630,13 +649,12 @@ public:
     if (const VarDecl *vd = result.Nodes.getNodeAs<VarDecl>("struct_instance")) {
       SourceManager& sm = result.Context->getSourceManager();
       recr_name = vd->getType().getTypePtr()->getUnqualifiedDesugaredType()->getCanonicalTypeInternal().getAsString();
-      if (recr_name == "pthread_mutex_t")
-        return;
-      if (sm.isInSystemHeader(vd->getBeginLoc()))
-        return;
-      SourceLocation begin_loc = vd->getBeginLoc();
+      SourceLocation begin_loc = sm.getFileLoc(vd->getBeginLoc());
       FileID src_id = sm.getFileID(begin_loc);
-      fs::path src_path = sm.getFileEntryForID(src_id)->getName().str();
+      const FileEntry *fentry = sm.getFileEntryForID(src_id);
+      if (sm.isInSystemHeader(begin_loc) || recr_name == "pthread_mutex_t")
+        return;
+      fs::path src_path = fentry->getName().str();
       EntityID uid = std::make_tuple(
         src_path,
         sm.getSpellingLineNumber(begin_loc),
@@ -653,7 +671,7 @@ public:
       YAML::Node meta;
       meta["name"] = vd->getNameAsString();
       meta["modification_type"] = VAR_FIELD_INIT;
-      meta["fentry_uid"] = sm.getFileEntryForID(src_id)->getUID();
+      meta["fentry_uid"] = fentry->getUID();
       if (!vd->isStaticLocal() && vd->hasGlobalStorage()) {
         Dylinx::Instance().require_init = true;
         meta["extra_init"] = true;
@@ -777,9 +795,9 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const VarDecl *d = result.Nodes.getNodeAs<VarDecl>("vars")) {
       SourceManager& sm = result.Context->getSourceManager();
-// #ifdef __DYLINX_DEBUG__
-//       DEBUG_LOG(VarDecl, d, sm);
-// #endif
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(VarDecl, d, sm);
+#endif
       if (sm.isInSystemHeader(d->getBeginLoc()))
         return;
 
@@ -892,9 +910,9 @@ public:
   virtual void run(const MatchFinder::MatchResult &result) {
     if (const CStyleCastExpr *cast_expr = result.Nodes.getNodeAs<CStyleCastExpr>("casting")) {
       SourceManager& sm = result.Context->getSourceManager();
-// #ifdef __DYLINX_DEBUG__
-//       DEBUG_LOG(CastPtr, cast_expr, sm);
-// #endif
+#ifdef __DYLINX_DEBUG__
+      DEBUG_LOG(CastPtr, cast_expr, sm);
+#endif
       SourceLocation begin_loc = cast_expr->getLParenLoc();
       SourceLocation end_loc = cast_expr->getRParenLoc();
       if (begin_loc.isMacroID()) {
@@ -944,11 +962,14 @@ public:
       if (pth.filename() == "pthread.h") {
         SourceManager& sm = Context.getSourceManager();
         SourceLocation header = sm.getIncludeLoc(file_id);
+        const FileID src_id = sm.getFileID(header);
+        std::string inclusion_file = sm.getFileEntryForID(src_id)->getName().str();
         Dylinx::Instance().pthread_header = sm.getFileID(header);
         uint32_t line = sm.getSpellingLineNumber(header);
         int32_t col = sm.getSpellingColumnNumber(header);
+        SourceLocation inserting_point = header.getLocWithOffset(-1 * col);
         Dylinx::Instance().rw_ptr->InsertTextAfter(
-          header.getLocWithOffset(-1 * col),
+          sm.getFileLoc(header.getLocWithOffset(-1 * col)),
           "\n#ifndef __DYLINX_REPLACE_PTHREAD_NATIVE__\n"
           "#define __DYLINX_REPLACE_PTHREAD_NATIVE__\n"
           "#define pthread_mutex_init pthread_mutex_init_original\n"
@@ -974,6 +995,7 @@ public:
           "#include \"dylinx-runtime-config.h\"\n"
           "#endif //__DYLINX_REPLACE_PTHREAD_NATIVE__\n"
         );
+        save2altered_list(src_id, sm);
       }
     }
 
@@ -1299,7 +1321,6 @@ public:
     std::set<FileID>::iterator iter;
     for (iter = Dylinx::Instance().cu_deps.begin(); iter != Dylinx::Instance().cu_deps.end(); iter++) {
       std::string filename = sm.getFileEntryForID(*iter)->getName().str();
-	  printf("filename is %s\n", filename.c_str());
       write_modified_file(filename, *iter, sm);
       Dylinx::Instance().altered_files.insert(filename);
     }
