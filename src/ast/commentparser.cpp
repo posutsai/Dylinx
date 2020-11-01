@@ -663,7 +663,7 @@ public:
       std::vector<std::tuple<std::string, std::string, uint32_t, uint32_t>> init_params;
       std::vector<std::string> field_seq;
       traverse_init_fields_with_name(vd->getType().getTypePtr()->getAsRecordDecl(), init_params, field_seq, sm);
-      if (!init_params.size())
+      if (!init_params.size() || vd->hasExternalStorage())
         return;
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(StructDecl, vd, sm);
@@ -1320,7 +1320,7 @@ public:
     }
     std::set<FileID>::iterator iter;
     for (iter = Dylinx::Instance().cu_deps.begin(); iter != Dylinx::Instance().cu_deps.end(); iter++) {
-      std::string filename = sm.getFileEntryForID(*iter)->getName().str();
+      std::string filename = sm.getFileEntryForID(*iter)->tryGetRealPathName().str();
       write_modified_file(filename, *iter, sm);
       Dylinx::Instance().altered_files.insert(filename);
     }
