@@ -20,7 +20,7 @@ typedef struct backoff_lock {
 } backoff_lock_t __attribute__((aligned(L_CACHE_LINE_SIZE)));
 
 int backoff_init(void **entity, pthread_mutexattr_t *attr) {
-#ifdef __DYLINX_DEBUG__
+#if __DYLINX_VERBOSE__ <= DYLINX_VERBOSE_INF
   printf("backoff-lock is initialized\n");
 #endif
   *entity = (backoff_lock_t *)alloc_cache_align(sizeof(backoff_lock_t));
@@ -64,10 +64,10 @@ int __backoff_unlock(void *entity) {
   COMPILER_BARRIER();
   backoff_lock_t *mtx = entity;
   mtx->spin_lock = UNLOCKED;
-#ifdef __DYLINX_DEBUG__
+#if __DYLINX_VERBOSE__ <= DYLINX_VERBOSE_INF
   printf("backoff-lock is disabled !!!\n");
 #endif
-  return 1;
+  return 0;
 }
 
 int backoff_unlock(void *entity) {
@@ -78,7 +78,7 @@ int backoff_unlock(void *entity) {
 }
 
 int backoff_destroy(void *entity) {
-#ifdef __DYLINX_DEBUG__
+#if __DYLINX_VERBOSE__ <= DYLINX_VERBOSE_INF
   printf("backoff-lock is finalized !!!\n");
 #endif
   backoff_lock_t *mtx = entity;

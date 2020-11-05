@@ -59,5 +59,8 @@ static inline void *xchg_64(void *ptr, void *x) {
 }
 
 #define COMPILER_BARRIER() __asm__ __volatile__("" : : : "memory")
+#define DYLINX_VERBOSE_INF 0
+#define DYLINX_VERBOSE_WAR 1
+#define DYLINX_VERBOSE_ERR 2
 
 #endif
