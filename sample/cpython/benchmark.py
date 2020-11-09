@@ -30,7 +30,7 @@ def parse_comparison(benchmark, mode, run_file, comb):
         for m in re.finditer(ptn, stdout):
             result[m.group(1)] = {
                 "comb": comb,
-                "time_ratio": 1/float(m.group(2)) if m.group(3) == "slower" else float(m.group(2)),
+                "time_ratio": 1/float(m.group(2)) if m.group(3) == "faster" else float(m.group(2)),
                 "significance": not m.group(4) == "Not significant"
             }
         if len(result.keys()) == 0:
@@ -40,14 +40,13 @@ def parse_comparison(benchmark, mode, run_file, comb):
 
 class DylinxSubject(BaseSubject):
     def __init__(self, cc_path, bm):
-        # self.bm_list = [
-        #     "json_dumps",
-        #     "nbody",
-        #     "pickle_list",
-        #     "regex_v8",
-        #     "scimark"
-        # ]
-        self.bm_list = [ "nbody" ]
+        self.bm_list = [
+            "nbody",
+            "pickle_list",
+            "regex_v8",
+            "scimark",
+            "pyflate"
+        ]
         self.repo = os.path.abspath(os.path.dirname(cc_path))
         self.sample_dir = os.path.abspath(os.path.dirname('.'))
         self.assure_standard(bm)

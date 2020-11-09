@@ -6,8 +6,10 @@ import itertools
 import logging
 import subprocess
 import pathlib
+import shutil
 import abc
 import ctypes
+import glob
 
 ALLOWED_LOCK_TYPE = ["PTHREADMTX", "ADAPTIVEMTX", "TTAS", "BACKOFF", "TICKET", "MCS"]
 
@@ -110,6 +112,7 @@ class BaseSubject(metaclass=abc.ABCMeta):
         self.inject_symbol()
         with open(f"{self.out_dir}/dylinx-insertion.yaml", "r") as stream:
             meta = list(yaml.load_all(stream, Loader=yaml.FullLoader))[0]
+        self.altered_files = meta["AlteredFiles"]
         self.permutation = []
         slots = list(self.filter_valid(meta["LockEntity"]))
         self.pluggable_sites = {}
@@ -181,17 +184,25 @@ class BaseSubject(metaclass=abc.ABCMeta):
         os.environ["C_INCLUDE_PATH"] = ":".join([f"{self.home_path}/src/glue", "/usr/local/lib/clang/10.0.0/include", f"{self.glue_dir}/glue"])
         os.environ["LIBRARY_PATH"] = ":".join([f"{self.home_path}/build/lib", f"{self.glue_dir}/lib"])
 
+    def revert_repo(self):
+        src2path = { pathlib.Path(f).name: f  for f in self.altered_files }
+        for f in glob.glob(f"{self.glue_dir}/src/*"):
+            abs = os.path.abspath(f)
+            shutil.copyfile(abs, src2path[abs])
+        os.redir(self.glue_dir)
+        print("Target is reverted !!!")
+
     @abc.abstractmethod
     def build_repo(self):
-        return NotImplemented
+        raise NotImplementedError
 
     @abc.abstractmethod
     def execute_repo(self):
-        return NotImplemented
+        raise NotImplementedError
 
     @abc.abstractmethod
     def stop_repo(self):
-        return NotImplemented
+        raise NotImplementedError
 
 class DylinxLog:
     def __init__(self, xray_log, insertion_log):
