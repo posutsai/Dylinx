@@ -6,6 +6,7 @@ import subprocess
 import re
 import itertools
 import json
+import numpy as np
 
 if f"{os.environ['DYLINX_HOME']}/python" not in sys.path:
     sys.path.append(f"{os.environ['DYLINX_HOME']}/python")
@@ -49,7 +50,7 @@ class DylinxSubject(BaseSubject):
         ]
         self.repo = os.path.abspath(os.path.dirname(cc_path))
         self.sample_dir = os.path.abspath(os.path.dirname('.'))
-        self.assure_standard(bm)
+        self.native_record = self.assure_standard(bm)
         super().__init__(cc_path)
 
     def assure_standard(self, bm):
@@ -63,8 +64,20 @@ class DylinxSubject(BaseSubject):
                 proc.wait()
                 os.chdir("../")
         elif bm == "computation_bound":
-            if not os.path.isfile("./perf_log/computation_bound/native.json"):
-                os.chdir(self.repo)
+            os.chdir(self.repo)
+            durations = []
+            make = subprocess.Popen("make", bufsize=0)
+            make.wait()
+            for i in range(5):
+                with subprocess.Popen( f"./python ../cpu_bound_task.py", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+                    durations.append(float(proc.stdout.read().decode("utf-8")))
+            os.chdir("../")
+            result = {
+                "mean": np.mean(durations),
+                "std": np.std(durations)
+            }
+            print("native", result)
+            return result
         else:
             raise ValueError
         print("Standard performance checked")
@@ -78,22 +91,40 @@ class DylinxSubject(BaseSubject):
         if len(err_msg) != 0:
             print(err_msg)
 
-    def execute_repo(self, record_json):
+    def execute_repo(self, benchmark, record_json=None):
         os.environ["LD_LIBRARY_PATH"] = ":".join([
             f"{self.repo}/.dylinx/lib",
             f"{os.environ['DYLINX_HOME']}/build/lib"
         ])
-        if os.path.isfile(record_json):
-            os.remove(record_json)
         os.chdir(self.repo)
-        with subprocess.Popen(
-            f"pyperformance run --python=./python3-dlx --inherit-environ=LD_LIBRARY_PATH -b {','.join(self.bm_list)} -o {record_json}; /bin/rm -rf venv",
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True
-        ) as task:
-            stdout = task.stdout.read().decode("utf-8")
-            stderr = task.stderr.read().decode("utf-8")
+        result = None
+        if benchmark == "pyperformance":
+            with subprocess.Popen(
+                f"pyperformance run --python=./python3-dlx --inherit-environ=LD_LIBRARY_PATH -b {','.join(self.bm_list)} -o {record_json}; /bin/rm -rf venv",
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True
+            ) as task:
+                stdout = task.stdout.read().decode("utf-8")
+                stderr = task.stderr.read().decode("utf-8")
+                result = {
+                    "stdout": stdout,
+                    "stderr": stderr,
+                }
+        elif benchmark == "computation_bound":
+            durations = []
+            for i in range(5):
+                with subprocess.Popen( f"./python3-dlx ../cpu_bound_task.py", shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE) as proc:
+                    stderr = proc.stderr.read().decode("utf-8")
+                    if stderr != "":
+                        print(stderr)
+                    durations.append(float(proc.stdout.read().decode("utf-8")))
+            result = {
+                "mean": np.mean(durations),
+                "std": np.std(durations)
+            }
+        else:
+            raise ValueError
         os.chdir("../")
-        return stdout, stderr
+        return result
 
     def stop_repo(self):
         return
@@ -105,9 +136,12 @@ def run(args):
     if args.mode == "same":
         id2type = { s: args.ltype for s in sites.keys() }
         subject.build_repo(id2type)
-        stdout, stderr = subject.execute_repo(f"{subject.sample_dir}/perf_log/{args.benchmark}/same/{args.ltype.lower()}.json")
-        print(stdout)
-        print(stderr)
+        if args.benchmark == "pyperformance":
+            result = subject.execute_repo(f"{subject.sample_dir}/perf_log/{args.benchmark}/same/{args.ltype.lower()}.json")
+            print(result["stdout"])
+            print(result["stderr"])
+        elif args.benchmark == "computation_bound":
+            result = subject.execute_repo(f"")
 
     if args.mode == "grid":
         available_locks = ("PTHREADMTX", "BACKOFF", "TTAS")
@@ -115,22 +149,32 @@ def run(args):
         sorted_keys = sorted(sites.keys())
         log_dir = f"{subject.sample_dir}/perf_log/{args.benchmark}/grid"
         print(sorted_keys)
-        result = []
-        for p in perm:
-            print(p)
-            fmt_str = ''.join(list(map(lambda e: LOCK_ABBREV[p[e]], sorted_keys)))
-            if not os.path.isfile(f"{log_dir}/{fmt_str}.json"):
+        if args.benchmark == "pyperformance":
+            result = []
+            for p in perm:
+                print(p)
+                fmt_str = ''.join(list(map(lambda e: LOCK_ABBREV[p[e]], sorted_keys)))
+                if not os.path.isfile(f"{log_dir}/{fmt_str}.json"):
+                    id2type = { k: p[i] for i, k in enumerate(sorted_keys) }
+                    subject.build_repo(id2type)
+                    subject.execute_repo(args.benchmark, f"{log_dir}/{fmt_str}.json")
+                    print(f"permutation : {p} completed and save to {log_dir}/{fmt_str}.json")
+                    result.append(parse_comparison(args.benchmark, args.mode, f"{fmt_str}.json", list(p)))
+            with open("{log_dir}total.json", "w") as handler:
+                json.dump(result, handler)
+
+        elif args.benchmark == "computation_bound":
+            result = {}
+            result["native"] = subject.native_record
+            for p in perm:
+                print(p)
+                fmt_str = ''.join(list(map(lambda e: LOCK_ABBREV[p[e]], sorted_keys)))
                 id2type = { k: p[i] for i, k in enumerate(sorted_keys) }
                 subject.build_repo(id2type)
-                stdout, stderr = subject.execute_repo(f"{log_dir}/{fmt_str}.json")
-                print(f"permutation : {p} completed and save to {log_dir}/{fmt_str}.json")
-            result.append(parse_comparison(args.benchmark, args.mode, f"{fmt_str}.json", list(p)))
-        with open("grid_total.json", "w") as handler:
-            json.dump(result, handler)
-
-
-
-
+                result[fmt_str] = subject.execute_repo(args.benchmark)
+                print(result[fmt_str])
+            with open(f"{log_dir}/grid.json", "w") as handler:
+                json.dump(result, handler)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
@@ -147,7 +191,7 @@ if __name__ == "__main__":
         "--benchmark",
         type=str,
         choices=["pyperformance", "computation_bound"],
-        default="pyperformance",
+        required=True,
         help="Configuring the operating mode."
     )
     parser.add_argument(
