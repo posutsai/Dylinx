@@ -1,6 +1,6 @@
 CC=clang
 .PHONY: clean
-INCLUDE_FLAG=-I/usr/local/lib/clang/10.0.0/include -I${DYLINX_HOME}/src/glue -I${DYLINX_HOME}/sample/exp/.dylinx/glue
+INCLUDE_FLAG=-I/usr/local/lib/clang/$(shell clang -dumpversion)/include -I${DYLINX_HOME}/src/glue -I${DYLINX_HOME}/sample/hot-exp/.dylinx/glue
 LD_FLAG=-L${DYLINX_HOME}/build/lib -L${DYLINX_HOME}/sample/hot-exp/.dylinx/lib -lpthread -lm
 DYLINX_FLAG=-ldl -ldlx-init -latomic
 
@@ -8,9 +8,10 @@ contentionless: poisson-process.c
 	$(CC) -c $^ -o bin/$@.o $(INCLUDE_FLAG) -DCS_RATIO=${cs_ratio} -DTEST_DURATION -O0 -fxray-instrument
 	$(CC) bin/$@.o -o bin/$@ $(LD_FLAG) -fxray-instrument
 
-hot-exp: poisson-process.c
-	$(CC) -c $^ -o bin/$@.o $(INCLUDE_FLAG) -DCS_RATIO=${cs_ratio} -DWITH_MUTEX -O0
-	$(CC) bin/$@.o -o bin/$@-process $(LD_FLAG)
+single-hot: poisson-process.c
+	$(CC) -c $^ -o bin/$@.o $(INCLUDE_FLAG) -DWITH_MUTEX -DCS_RATIO=${cs_ratio} -O0 -fxray-instrument -fxray-instruction-threshold=1
+	$(CC) bin/$@.o ${DYLINX_HOME}/build/.objs/dlx-glue/linux/x86_64/release/src/glue/dylinx-glue.c.o -o bin/$@-${ltype} $(LD_FLAG) $(DYLINX_FLAG) -fxray-instrument -fxray-instruction-threshold=1
 
 clean:
 	/bin/rm -rf bin/*
+	/bin/rm -rf xray-log/*

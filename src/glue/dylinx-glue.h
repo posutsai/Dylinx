@@ -1,8 +1,8 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-#include <dlfcn.h>
 #include <stdint.h>
+#include <dlfcn.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,9 +35,6 @@
 #pragma clang diagnostic ignored "-Wincompatible-pointer-types"
 #pragma clang diagnostic ignored "-Wmacro-redefined"
 
-#define XRAY_ATTR                                                                 \
-  __attribute__((xray_always_instrument))                                         \
-  __attribute__((xray_log_args(2)))
 #define ALLOWED_LOCK_TYPE pthreadmtx, ttas, backoff, adaptivemtx, mcs
 #define LOCK_TYPE_LIMIT 10
 #define DYLINX_LOCK_TO_TYPE(lock) dlx_ ## lock ## _t
@@ -151,16 +148,16 @@ int dlx_error_arr_init(void *, uint32_t, int type_id, char *var_name, char *file
 void *dlx_error_obj_init(uint32_t, uint32_t, uint32_t *, uint32_t, void **, int *type_ids, char *, int);
 void *dlx_struct_obj_init(uint32_t, uint32_t, uint32_t *, uint32_t, void **, int *type_ids, char *, int);
 
-XRAY_ATTR int dlx_error_enable(int64_t, void *, char *, char *, int);
-XRAY_ATTR int dlx_error_disable(int64_t, void *, char *, char *, int);
-XRAY_ATTR int dlx_error_destroy(int64_t, void *);
-XRAY_ATTR int dlx_error_trylock(int64_t, void *, char *, char *, int);
+int dlx_error_enable(int64_t, void *, char *, char *, int);
+int dlx_error_disable(int64_t, void *, char *, char *, int);
+int dlx_error_destroy(int64_t, void *);
+int dlx_error_trylock(int64_t, void *, char *, char *, int);
 int dlx_error_cond_timedwait(pthread_cond_t *, void *, const struct timespec *);
 int dlx_error_cond_wait(pthread_cond_t *, void *);
-XRAY_ATTR int dlx_forward_enable(int64_t, void *, char *, char *, int);
-XRAY_ATTR int dlx_forward_disable(int64_t, void *, char *, char *, int);
-XRAY_ATTR int dlx_forward_destroy(int64_t, void *);
-XRAY_ATTR int dlx_forward_trylock(int64_t, void *, char *, char *, int);
+int dlx_forward_enable(int64_t, void *, char *, char *, int);
+int dlx_forward_disable(int64_t, void *, char *, char *, int);
+int dlx_forward_destroy(int64_t, void *);
+int dlx_forward_trylock(int64_t, void *, char *, char *, int);
 int dlx_forward_cond_wait(pthread_cond_t *, void *);
 int dlx_forward_cond_timedwait(pthread_cond_t *, void *, const struct timespec *);
 

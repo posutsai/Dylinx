@@ -165,6 +165,9 @@ class BaseSubject(metaclass=abc.ABCMeta):
         return self.pluggable_sites
 
     def configure_type(self, id2type):
+        with subprocess.Popen("clang -dumpversion", stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True) as proc:
+            clang_version = proc.stdout.read().decode("utf-8")
+            proc.stderr.read().decode("utf-8")
         id2type = {int(k): v for k,v in id2type.items()}
         header_start = (
             "#ifndef __DYLINX_ITERATE_LOCK_COMB__\n"
@@ -181,7 +184,7 @@ class BaseSubject(metaclass=abc.ABCMeta):
             content = '\n'.join(macro_defs)
             rt_config.write(f"{header_start}\n{content}\n{header_end}")
         # os.chdir(str(pathlib.PurePath(self.cc_path).parent))
-        os.environ["C_INCLUDE_PATH"] = ":".join([f"{self.home_path}/src/glue", "/usr/local/lib/clang/10.0.0/include", f"{self.glue_dir}/glue"])
+        os.environ["C_INCLUDE_PATH"] = ":".join([f"{self.home_path}/src/glue", f"/usr/local/lib/clang/{clang_version}/include", f"{self.glue_dir}/glue"])
         os.environ["LIBRARY_PATH"] = ":".join([f"{self.home_path}/build/lib", f"{self.glue_dir}/lib"])
 
     def revert_repo(self):

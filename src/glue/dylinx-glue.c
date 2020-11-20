@@ -225,7 +225,6 @@ int dlx_error_enable(int64_t long_id, void *lock, char *var_name, char *file, in
 }
 
 int dlx_forward_enable(int64_t long_id, void *lock, char *var_name, char *file, int line) {
-// XRAY_ATTR int dlx_forward_enable(void *lock, char *var_name, char *file, int line) {
 #if __DYLINX_VERBOSE__ <= DYLINX_VERBOSE_INF
   do {
     char log_msg[300];
