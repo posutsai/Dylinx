@@ -15,21 +15,30 @@ if f"{os.environ['DYLINX_HOME']}/python" not in sys.path:
     sys.path.append(f"{os.environ['DYLINX_HOME']}/python")
 from Dylinx import BaseSubject, ALLOWED_LOCK_TYPE
 
+class TraceEntry:
+    def __init__(self, groups):
+        self.function = groups[0]
+        self.cpu = int(groups[1])
+        self.thread = int(groups[2])
+        self.process = int(groups[3])
+        self.kind = groups[4]
+        self.tsc = int(groups[5])
+
 class CriticalSection:
     def __init__(self, timestamps):
         attempt, acquire, release, deviate = timestamps
-        assert(attempt["function"] == "critical_section" and attempt["kind"] == "function-enter")
-        assert(acquire["function"] == "critical_load" and acquire["kind"] == "function-enter")
-        assert(release["function"] == "critical_load" and release["kind"] == "function-exit")
-        assert(deviate["function"] == "critical_section" and deviate["kind"] == "function-exit")
-        self.attempt = timestamps[0]["tsc"]
-        self.acquire = timestamps[1]["tsc"]
-        self.release = timestamps[2]["tsc"]
-        self.deviate = timestamps[3]["tsc"]
+        assert(attempt.function == "critical_section" and attempt.kind == "enter")
+        assert(acquire.function == "critical_load" and acquire.kind == "enter")
+        assert(release.function == "critical_load" and release.kind == "exit")
+        assert(deviate.function == "critical_section" and deviate.kind == "exit")
+        self.attempt = timestamps[0].tsc
+        self.acquire = timestamps[1].tsc
+        self.release = timestamps[2].tsc
+        self.deviate = timestamps[3].tsc
         self.duration = self.deviate - self.attempt
         self.possession = self.release - self.acquire
-        self.tid = timestamps[0]["thread"]
-        self.pid = timestamps[0]["process"]
+        self.tid = timestamps[0].thread
+        self.pid = timestamps[0].process
         assert(self.duration > 0 and self.possession > 0)
     def __str__(self):
         props = {
@@ -44,56 +53,71 @@ class CriticalSection:
         }
         return str(props)
 
-def group_cs(records, with_main_tid=False):
-    records = list(filter(lambda r: "critical" in r["function"], records))
-    threads = {r["thread"] for r in records}
+def group_cs(records):
+    threads = {r.thread for r in records}
     logs = {t: [] for t in threads}
     for r in records:
-        logs[r["thread"]].append(r)
-    if with_main_tid:
-        logs.pop(min(threads), None)
+        logs[r.thread].append(r)
     critical_sections = []
     for t in logs.keys():
-        ordered = sorted(logs[t], key=lambda r: r["tsc"])
+        ordered = sorted(logs[t], key=lambda r: r.tsc)
         assert(len(ordered) % 4 == 0)
         for i in range(len(ordered) // 4):
             critical_sections.append(CriticalSection(ordered[i*4: i*4 + 4]))
     return critical_sections
 
-def get_poisson_lambda(critical_sections, bin_size=2500):
+def poisson_map(args):
+    bins, critical_sections, bin_size = args
+    stat = { n: 0 for n in range(multiprocessing.cpu_count())}
+    start_index = 0
+    for b in bins:
+        contending = 0
+        for cs in critical_sections[start_index:]:
+            if cs.attempt > b + bin_size:
+                break
+            if (cs.attempt <= b and cs.deviate > b) or (cs.attempt <= b + bin_size and cs.deviate > b + bin_size):
+                contending += 1
+            if cs.deviate < b:
+                start_index += 1
+        stat[contending] = stat[contending] + 1 if contending in stat.keys() else stat.get(contending, 1)
+    return stat
+
+def get_poisson_lambda(critical_sections, bin_size=1000):
     durations = [cs.duration for cs in critical_sections]
     print(f"mean duration of cs: {np.mean(durations)}")
     critical_sections = sorted(critical_sections, key=lambda cs: cs.attempt)
+    print(len(critical_sections))
     start_index = 0
     stat = { n: 0 for n in range(multiprocessing.cpu_count())}
-    for bin in range(critical_sections[0].attempt, critical_sections[-1].deviate, bin_size):
-        contending_num = 0
-        for cs in critical_sections[start_index:]:
-            if cs.attempt > bin + bin_size:
-                break
-            if (cs.attempt <= bin and cs.deviate > bin) or (cs.attempt <= bin + bin_size and cs.deviate > bin + bin_size):
-                contending_num += 1
-            if cs.deviate < bin:
-                start_index += 1
-        stat[contending_num] = stat[contending_num] + 1 if contending_num in stat.keys() else stat.get(contending_num, 1)
+    bins = list(range(critical_sections[0].attempt, critical_sections[-1].deviate, bin_size))
+    print(f"bin number is {len(bins)}")
+    residue = bins[-1 * (len(bins) % multiprocessing.cpu_count()): ]
+    chop = len(bins) // multiprocessing.cpu_count()
+    args = []
+    for i in range(multiprocessing.cpu_count()):
+        args.append((bins[chop * i: chop * (i + 1)], critical_sections, bin_size))
+    args.append((residue, critical_sections, bin_size))
+    parallel_res = g_pool.map(poisson_map, args)
+    print("mapping complete")
+    for k in stat.keys():
+        stat[k] = sum([ p[k] for p in parallel_res ])
     accu = 0.
     print(stat)
     for n, occurrence in stat.items():
         accu += n * occurrence
     return accu / sum(stat.values())
 
-def handover_time_eval(critical_sections):
-    critical_sections = sorted(critical_sections, key=lambda cs: cs.acquire)
-    print(f"number of cs: {len(critical_sections)}")
-    stat = { n: [] for n in range(multiprocessing.cpu_count()) }
-    for i in range(len(critical_sections) - 1):
+def hot_map(args):
+    start, critical_sections, cpu_count = args
+    chop = len(critical_sections) // cpu_count
+    stat = { n: [] for n in range(cpu_count) }
+    for i in range(start * chop, (start + 1) * chop if start != cpu_count - 1 else (start + 1) * chop - 1):
         contending = 0
         switch_out = critical_sections[i]
         hot = critical_sections[i + 1].acquire - switch_out.release
         if hot < 0:
             print(switch_out)
             print(critical_sections[i + 1])
-            sys.exit()
         for cs in critical_sections[i:]:
             if cs.attempt > switch_out.deviate:
                 break
@@ -104,6 +128,16 @@ def handover_time_eval(critical_sections):
             stat[contending].append(hot)
         else:
             stat[contending].append(hot)
+    return stat
+
+def handover_time_eval(critical_sections):
+    critical_sections = sorted(critical_sections, key=lambda cs: cs.acquire)
+    print(f"number of cs: {len(critical_sections)}")
+    result = g_pool.map(hot_map, [ (i, critical_sections, multiprocessing.cpu_count()) for i in range(multiprocessing.cpu_count())])
+    stat = {n: [] for n in range(multiprocessing.cpu_count())}
+    for r in result:
+        for k in stat.keys():
+            stat[k] = r[k] + stat[k]
     for n_thread, interval in stat.items():
         if len(interval) > 0:
             print(f"hot( {n_thread} ): occur = {len(interval)} mean = {np.mean(interval)}, std = {np.std(interval)}")
@@ -139,11 +173,16 @@ class DylinxSubject(BaseSubject):
             stdout = proc.stdout.read().decode("utf-8")
             stderr = proc.stderr.read().decode("utf-8")
         with open("/tmp/xray-ideal.yaml", "r") as stream:
-            xray_recr = list(yaml.load_all(stream, Loader=yaml.FullLoader))[0]
-        self.cycle_freq = xray_recr["header"]["cycle-frequency"]
-        critical_sections = group_cs(xray_recr["records"], True)
+            xray_log = stream.read()
+            pattern = re.compile(r"- { type: 0, func-id: \d+, function: (.*), cpu: (\d*), thread: (\d*). process: (\d*), kind: function-(enter|exit), tsc: (\d*), data: '' }")
+            entries = re.findall(pattern, xray_log)
+            traces = list(map(lambda entry: TraceEntry(entry), entries))
+            traces = list(filter(lambda trace: "critical" in trace.function, traces))
+        critical_sections = group_cs(traces)
         self.ideal_lambda = get_poisson_lambda(critical_sections)
         print(f"Ideal poisson process is complete. lambda = {self.ideal_lambda}")
+        sys.exit()
+
 
     def build_repo(self, ltype, cs_ratio, id2type):
         super().configure_type(id2type)
@@ -171,10 +210,14 @@ class DylinxSubject(BaseSubject):
             stdout = proc.stdout.read().decode("utf-8")
             stderr = proc.stderr.read().decode("utf-8")
         with open("/tmp/xray-simple-hot.yaml") as stream:
-            xray_recr = list(yaml.load_all(stream, Loader=yaml.FullLoader))[0]
-        critical_sections = group_cs(xray_recr["records"])
-        self.practical_lambda = get_poisson_lambda(critical_sections)
-        print(f"{ltype} lambda is {self.practical_lambda}")
+            xray_log = stream.read()
+            pattern = re.compile(r"- { type: 0, func-id: \d+, function: (.*), cpu: (\d*), thread: (\d*). process: (\d*), kind: function-(enter|exit), tsc: (\d*), data: '' }")
+            entries = re.findall(pattern, xray_log)
+            traces = list(map(lambda entry: TraceEntry(entry), entries))
+            traces = list(filter(lambda trace: "critical" in trace.function, traces))
+        critical_sections = group_cs(traces)
+        # self.practical_lambda = get_poisson_lambda(critical_sections)
+        # print(f"{ltype} lambda is {self.practical_lambda}")
         handover_time_eval(critical_sections)
 
     def stop_repo(self):
@@ -194,6 +237,8 @@ def run(args):
 
     elif args.mode == "mix":
         raise NotImplemented
+
+g_pool = multiprocessing.Pool(multiprocessing.cpu_count())
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
