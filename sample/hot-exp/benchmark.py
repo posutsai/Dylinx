@@ -52,6 +52,20 @@ class CriticalSection:
             "possession": self.possession
         }
         return str(props)
+    def print_with_origin(self, origin):
+        props = {
+            "tid": self.tid,
+            "tsc": {
+                "attempt": self.attempt - origin,
+                "acquire": self.acquire - origin,
+                "release": self.release - origin,
+                "deviate": self.deviate - origin,
+            },
+            "duration": self.duration,
+            "possession": self.possession
+        }
+        # print(props)
+        return props
 
 def group_cs(records):
     threads = {r.thread for r in records}
@@ -98,7 +112,6 @@ def get_poisson_lambda(critical_sections, bin_size=1000):
         args.append((bins[chop * i: chop * (i + 1)], critical_sections, bin_size))
     args.append((residue, critical_sections, bin_size))
     parallel_res = g_pool.map(poisson_map, args)
-    print("mapping complete")
     for k in stat.keys():
         stat[k] = sum([ p[k] for p in parallel_res ])
     accu = 0.
@@ -108,21 +121,43 @@ def get_poisson_lambda(critical_sections, bin_size=1000):
     return accu / sum(stat.values())
 
 def hot_map(args):
-    start, critical_sections, cpu_count = args
+    start, critical_sections, cpu_count, acquire_order, attempt_order = args
     chop = len(critical_sections) // cpu_count
     stat = { n: [] for n in range(cpu_count) }
+    scan_origin = 0
+    shift = critical_sections[attempt_order[0]].attempt
+    # with open("cs_attempt_log", "w") as f:
+    #     for a in attempt_order:
+    #         props = critical_sections[a].print_with_origin(shift)
+    #         f.write(f"attempt_i[{a}] = {props}\n")
+    # with open("cs_acquire_log", "w") as f:
+    #     for a in acquire_order:
+    #         props = critical_sections[a].print_with_origin(shift)
+    #         f.write(f"acquire_i[{a}] = {props}\n")
+
     for i in range(start * chop, (start + 1) * chop if start != cpu_count - 1 else (start + 1) * chop - 1):
         contending = 0
-        switch_out = critical_sections[i]
-        hot = critical_sections[i + 1].acquire - switch_out.release
+        switch_out = critical_sections[acquire_order[i]]
+        hot = critical_sections[acquire_order[i + 1]].acquire - switch_out.release
+        # print("switch_out")
+        # switch_out.print_with_origin(shift)
         if hot < 0:
             print(switch_out)
             print(critical_sections[i + 1])
-        for cs in critical_sections[i:]:
-            if cs.attempt > switch_out.deviate:
+        for attempt_i in attempt_order[scan_origin:]:
+            scanning_cs = critical_sections[attempt_i]
+            # print(f"attempt_i is {attempt_i}")
+            # print("scanning")
+            # scanning_cs.print_with_origin(shift)
+            if scanning_cs.attempt > switch_out.deviate:
+                # print("achieve break condition")
                 break
-            if cs.attempt <= switch_out.release and cs.acquire > switch_out.release:
+            if scanning_cs.attempt <= switch_out.release and scanning_cs.acquire > switch_out.release:
+                # print("found {contending}")
                 contending += 1
+            if scanning_cs.deviate < switch_out.attempt:
+                # print("origin shift")
+                scan_origin += 1
         if contending not in stat.keys():
             stat[contending] = []
             stat[contending].append(hot)
@@ -131,16 +166,20 @@ def hot_map(args):
     return stat
 
 def handover_time_eval(critical_sections):
-    critical_sections = sorted(critical_sections, key=lambda cs: cs.acquire)
+    acquire_order = list(range(len(critical_sections)))
+    acquire_order = sorted(acquire_order, key=lambda i: critical_sections[i].acquire)
+    attempt_order = list(range(len(critical_sections)))
+    attempt_order = sorted(attempt_order, key=lambda i: critical_sections[i].attempt)
     print(f"number of cs: {len(critical_sections)}")
-    result = g_pool.map(hot_map, [ (i, critical_sections, multiprocessing.cpu_count()) for i in range(multiprocessing.cpu_count())])
+    # hot_map((0, critical_sections, multiprocessing.cpu_count(), acquire_order, attempt_order))
+    result = g_pool.map(hot_map, [ (i, critical_sections, multiprocessing.cpu_count(), acquire_order, attempt_order) for i in range(multiprocessing.cpu_count())])
     stat = {n: [] for n in range(multiprocessing.cpu_count())}
     for r in result:
         for k in stat.keys():
             stat[k] = r[k] + stat[k]
     for n_thread, interval in stat.items():
         if len(interval) > 0:
-            print(f"hot( {n_thread} ): occur = {len(interval)} mean = {np.mean(interval)}, std = {np.std(interval)}")
+            print(f"hot({n_thread:2d}): occur = {len(interval):8d} mean = {np.mean(interval):9.2f}, std = {np.std(interval):9.2f}")
     return stat
 
 
@@ -149,7 +188,7 @@ class DylinxSubject(BaseSubject):
         self.repo = os.path.abspath(os.path.dirname(cc_path))
         self.sample_dir = os.path.abspath(os.path.dirname('.'))
         self.xray_option = "\"patch_premain=true xray_mode=xray-basic xray_logfile_base=xray-log/ \""
-        self.ideal_record = self.perform_ideal_poisson(cs_ratio)
+        # self.ideal_record = self.perform_ideal_poisson(cs_ratio)
         super().__init__(cc_path)
 
     def perform_ideal_poisson(self, cs_ratio):
@@ -181,8 +220,6 @@ class DylinxSubject(BaseSubject):
         critical_sections = group_cs(traces)
         self.ideal_lambda = get_poisson_lambda(critical_sections)
         print(f"Ideal poisson process is complete. lambda = {self.ideal_lambda}")
-        sys.exit()
-
 
     def build_repo(self, ltype, cs_ratio, id2type):
         super().configure_type(id2type)

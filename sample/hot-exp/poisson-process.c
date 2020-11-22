@@ -8,17 +8,21 @@
 #include <x86intrin.h>
 #include <float.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
 
-/* #define TOTAL_NUM_OP (1 << 30) * 1. */
-#define TOTAL_NUM_OP (1 << 13) * 1.
+#ifndef CS_DURATION_EXP
+#   error Error happens because CS_DURATION_EXP macro is not defined
+#endif
+
+#define TOTAL_NUM_OP (1 << CS_DURATION_EXP) * 1.
 #ifndef CS_RATIO
 #   error Error happens because CS_RATIO macro is not defined
 #endif
 
-#define REPEAT 1 << 14
+#define REPEAT 1 << 12
 #define TEST_TIME 10
 
 typedef struct {
@@ -31,30 +35,23 @@ typedef struct {
 pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
 
 __attribute__((xray_always_instrument)) void critical_load() {
-    float limit = TOTAL_NUM_OP * CS_RATIO;
+    float limit = TOTAL_NUM_OP;
     for (uint32_t i = 0; i < limit; i++) {
         __asm__ volatile("" : "+g" (i) : :);
     }
 }
 
 __attribute__((xray_always_instrument)) void critical_section() {
+#ifdef WITH_MUTEX
+    pthread_mutex_lock(&mtx);
+#endif
     critical_load();
 #ifdef WITH_MUTEX
     pthread_mutex_unlock(&mtx);
 #endif
 }
 
-__attribute__((xray_never_instrument)) void parallel_section_head() {
-    float limit = TOTAL_NUM_OP * ((1 - CS_RATIO) / 2.);
-    for (uint32_t i = 0; i < limit; i++) {
-        __asm__ volatile("" : "+g" (i) : :);
-    }
-#ifdef WITH_MUTEX
-    pthread_mutex_lock(&mtx);
-#endif
-}
-
-__attribute__((xray_never_instrument)) void parallel_section_bottom() {
+__attribute__((xray_never_instrument)) void parallel_section() {
     float limit = TOTAL_NUM_OP * ((1 - CS_RATIO) / 2.);
     for (uint32_t i = 0; i < limit; i++) {
         __asm__ volatile("" : "+g" (i) : :);
@@ -62,12 +59,10 @@ __attribute__((xray_never_instrument)) void parallel_section_bottom() {
 }
 
  __attribute__((xray_never_instrument)) void *parallel_op(void *args) {
-    pid_t tid = syscall(SYS_gettid);
-    printf("spawn_tid: %d\n", tid);
     for (int i = 0; i < REPEAT; i++) {
-        parallel_section_head();
+        parallel_section();
         critical_section();
-        parallel_section_bottom();
+        parallel_section();
     }
     return NULL;
 }
@@ -99,11 +94,14 @@ int main(int argc, char *argv[]) {
     stable_index_t index;
     for (int i = 0; i < TEST_TIME; i++) {
         uint64_t start = __rdtsc();
-        parallel_section_head();
+        parallel_section();
         uint64_t cs_start = __rdtsc();
-        critical_section();
+        float limit = TOTAL_NUM_OP * CS_RATIO;
+        for (uint32_t i = 0; i < limit; i++) {
+            __asm__ volatile("" : "+g" (i) : :);
+        }
         uint64_t cs_end = __rdtsc();
-        parallel_section_bottom();
+        parallel_section();
         uint64_t end = __rdtsc();
         uint64_t total_dur = end - start;
         uint64_t cs_dur = cs_end - cs_start;
@@ -111,10 +109,7 @@ int main(int argc, char *argv[]) {
     }
     get_mean_std(ratio, TEST_TIME, &index);
     printf("mean: %f, std: %f, max: %f, min: %f, main_tid: %d\n", index.mean, index.std, index.max, index.min, tid);
-    if (index.std > 0.002)
-        printf("ERROR std value is so high that the exp may be unstable.\n");
 #endif // TEST_DURATION
-    printf("main_tid: %d\n", tid);
     uint32_t n_core = get_nprocs();
     pthread_t threads[n_core];
     for (uint32_t i = 0; i < n_core; i++)

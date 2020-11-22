@@ -5,11 +5,11 @@ LD_FLAG=-L${DYLINX_HOME}/build/lib -L${DYLINX_HOME}/sample/hot-exp/.dylinx/lib -
 DYLINX_FLAG=-ldl -ldlx-init -latomic
 
 contentionless: poisson-process.c
-	$(CC) -c $^ -o bin/$@.o $(INCLUDE_FLAG) -DCS_RATIO=${cs_ratio} -DTEST_DURATION -O0 -fxray-instrument
+	$(CC) -c $^ -o bin/$@.o $(INCLUDE_FLAG) -DCS_RATIO=${cs_ratio} -DCS_DURATION_EXP=${cs_exp} -DTEST_DURATION -O0 -fxray-instrument
 	$(CC) bin/$@.o -o bin/$@ $(LD_FLAG) -fxray-instrument
 
 single-hot: poisson-process.c
-	$(CC) -c $^ -o bin/$@.o $(INCLUDE_FLAG) -DWITH_MUTEX -DCS_RATIO=${cs_ratio} -O0 -fxray-instrument -fxray-instruction-threshold=1
+	$(CC) -c $^ -o bin/$@.o $(INCLUDE_FLAG) -DWITH_MUTEX -DCS_RATIO=${cs_ratio} -DCS_DURATION_EXP={cs_exp} -O0 -fxray-instrument -fxray-instruction-threshold=1
 	$(CC) bin/$@.o ${DYLINX_HOME}/build/.objs/dlx-glue/linux/x86_64/release/src/glue/dylinx-glue.c.o -o bin/$@-${ltype} $(LD_FLAG) $(DYLINX_FLAG) -fxray-instrument -fxray-instruction-threshold=1
 
 clean:
