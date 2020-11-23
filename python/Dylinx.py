@@ -190,9 +190,9 @@ class BaseSubject(metaclass=abc.ABCMeta):
     def revert_repo(self):
         src2path = { pathlib.Path(f).name: f  for f in self.altered_files }
         for f in glob.glob(f"{self.glue_dir}/src/*"):
-            abs = os.path.abspath(f)
-            shutil.copyfile(abs, src2path[abs])
-        os.redir(self.glue_dir)
+            name = pathlib.Path(f).name
+            shutil.copyfile(f, src2path[name])
+        shutil.rmtree(self.glue_dir)
         print("Target is reverted !!!")
 
     @abc.abstractmethod

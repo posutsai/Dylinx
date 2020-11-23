@@ -9,6 +9,7 @@ import json
 import numpy as np
 import glob
 import yaml
+import pickle
 import multiprocessing
 
 if f"{os.environ['DYLINX_HOME']}/python" not in sys.path:
@@ -52,20 +53,6 @@ class CriticalSection:
             "possession": self.possession
         }
         return str(props)
-    def print_with_origin(self, origin):
-        props = {
-            "tid": self.tid,
-            "tsc": {
-                "attempt": self.attempt - origin,
-                "acquire": self.acquire - origin,
-                "release": self.release - origin,
-                "deviate": self.deviate - origin,
-            },
-            "duration": self.duration,
-            "possession": self.possession
-        }
-        # print(props)
-        return props
 
 def group_cs(records):
     threads = {r.thread for r in records}
@@ -96,15 +83,13 @@ def poisson_map(args):
         stat[contending] = stat[contending] + 1 if contending in stat.keys() else stat.get(contending, 1)
     return stat
 
-def get_poisson_lambda(critical_sections, bin_size=1000):
+def get_poisson_lambda(critical_sections, bin_size=50000):
     durations = [cs.duration for cs in critical_sections]
     print(f"mean duration of cs: {np.mean(durations)}")
     critical_sections = sorted(critical_sections, key=lambda cs: cs.attempt)
-    print(len(critical_sections))
     start_index = 0
     stat = { n: 0 for n in range(multiprocessing.cpu_count())}
     bins = list(range(critical_sections[0].attempt, critical_sections[-1].deviate, bin_size))
-    print(f"bin number is {len(bins)}")
     residue = bins[-1 * (len(bins) % multiprocessing.cpu_count()): ]
     chop = len(bins) // multiprocessing.cpu_count()
     args = []
@@ -126,37 +111,21 @@ def hot_map(args):
     stat = { n: [] for n in range(cpu_count) }
     scan_origin = 0
     shift = critical_sections[attempt_order[0]].attempt
-    # with open("cs_attempt_log", "w") as f:
-    #     for a in attempt_order:
-    #         props = critical_sections[a].print_with_origin(shift)
-    #         f.write(f"attempt_i[{a}] = {props}\n")
-    # with open("cs_acquire_log", "w") as f:
-    #     for a in acquire_order:
-    #         props = critical_sections[a].print_with_origin(shift)
-    #         f.write(f"acquire_i[{a}] = {props}\n")
 
     for i in range(start * chop, (start + 1) * chop if start != cpu_count - 1 else (start + 1) * chop - 1):
         contending = 0
         switch_out = critical_sections[acquire_order[i]]
         hot = critical_sections[acquire_order[i + 1]].acquire - switch_out.release
-        # print("switch_out")
-        # switch_out.print_with_origin(shift)
         if hot < 0:
             print(switch_out)
             print(critical_sections[i + 1])
         for attempt_i in attempt_order[scan_origin:]:
             scanning_cs = critical_sections[attempt_i]
-            # print(f"attempt_i is {attempt_i}")
-            # print("scanning")
-            # scanning_cs.print_with_origin(shift)
             if scanning_cs.attempt > switch_out.deviate:
-                # print("achieve break condition")
                 break
             if scanning_cs.attempt <= switch_out.release and scanning_cs.acquire > switch_out.release:
-                # print("found {contending}")
                 contending += 1
             if scanning_cs.deviate < switch_out.attempt:
-                # print("origin shift")
                 scan_origin += 1
         if contending not in stat.keys():
             stat[contending] = []
@@ -170,39 +139,64 @@ def handover_time_eval(critical_sections):
     acquire_order = sorted(acquire_order, key=lambda i: critical_sections[i].acquire)
     attempt_order = list(range(len(critical_sections)))
     attempt_order = sorted(attempt_order, key=lambda i: critical_sections[i].attempt)
-    print(f"number of cs: {len(critical_sections)}")
-    # hot_map((0, critical_sections, multiprocessing.cpu_count(), acquire_order, attempt_order))
     result = g_pool.map(hot_map, [ (i, critical_sections, multiprocessing.cpu_count(), acquire_order, attempt_order) for i in range(multiprocessing.cpu_count())])
     stat = {n: [] for n in range(multiprocessing.cpu_count())}
     for r in result:
         for k in stat.keys():
             stat[k] = r[k] + stat[k]
+    hot_info = {}
     for n_thread, interval in stat.items():
         if len(interval) > 0:
-            print(f"hot({n_thread:2d}): occur = {len(interval):8d} mean = {np.mean(interval):9.2f}, std = {np.std(interval):9.2f}")
-    return stat
+            hot_info[n_thread] = {
+                "occur": len(interval),
+                "mean": np.mean(interval),
+                "std": np.std(interval),
+            }
+            print(f"hot({n_thread:2d}) mean: {np.mean(interval):9.2f}, std: {np.std(interval):9.2f}")
+        else:
+            hot_info[n_thread] = {
+                "occur": 0,
+                "mean": 0.,
+                "std": 0.,
+            }
+    return hot_info
 
 
 class DylinxSubject(BaseSubject):
-    def __init__(self, cc_path, cs_ratio):
+
+    def __init__(self, cc_path, cs_ratio, cs_exp):
         self.repo = os.path.abspath(os.path.dirname(cc_path))
         self.sample_dir = os.path.abspath(os.path.dirname('.'))
         self.xray_option = "\"patch_premain=true xray_mode=xray-basic xray_logfile_base=xray-log/ \""
-        # self.ideal_record = self.perform_ideal_poisson(cs_ratio)
+        self.ideal_cs_ratio = cs_ratio
+        self.cs_exp = cs_exp
+        if cs_ratio != 1.:
+            self.hyper_param = self.perform_ideal_poisson(cs_ratio)
         super().__init__(cc_path)
 
-    def perform_ideal_poisson(self, cs_ratio):
+    def __enter__(self):
+        if self.ideal_cs_ratio != 1.:
+            print("Hyperparameter within lockless process is complete")
+            print(f"ideal cs_ratio={cs_ratio:3.2f}, cs_duration={2 ** (self.cs_exp - 1)}")
+            cs_ratio = self.hyper_param['cs_ratio']
+            print(f"measured cs_ratio max={cs_ratio['max']}, min={cs_ratio['min']}, mean={cs_ratio['mean']}, std={cs_ratio['std']}")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.revert_repo()
+
+    def perform_ideal_poisson(self, cs_ratio, cs_exp):
+        hyper_param = {}
         with subprocess.Popen(
-            f"make contentionless cs_ratio={cs_ratio}; XRAY_OPTIONS={self.xray_option} ./bin/contentionless",
+            f"make contentionless cs_ratio={cs_ratio:1.2f} cs_exp={cs_exp}; XRAY_OPTIONS={self.xray_option} ./bin/contentionless",
             shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE
         ) as proc:
             pattern = re.compile(r"mean: ([\d.]*), std: ([\d.]*), max: ([\d.]*), min: ([\d.]*), main_tid: ([\d.]*)")
             stdout = proc.stdout.read().decode("utf-8")
             proc.stderr.read().decode("utf-8")
-            mean, std, max, min, main_tid = re.findall(pattern, stdout)[0]
-            print(f"mean: {mean}, std: {std}, max: {max}, min: {min}")
-            if float(std) > 0.002:
-                print("std value is too high. please consider to escalate the task duration.")
+            ratio_log = {}
+            ratio_log["mean"], ratio_log["std"], ratio_log["max"], ratio_log["min"], _ = re.findall(pattern, stdout)[0]
+            hyper_param["cs_ratio"] = ratio_log
         logs = glob.glob("xray-log/contentionless.*")
         latest = sorted(logs, key=lambda l: os.path.getmtime(l))[-1]
         with subprocess.Popen(
@@ -218,16 +212,16 @@ class DylinxSubject(BaseSubject):
             traces = list(map(lambda entry: TraceEntry(entry), entries))
             traces = list(filter(lambda trace: "critical" in trace.function, traces))
         critical_sections = group_cs(traces)
-        self.ideal_lambda = get_poisson_lambda(critical_sections)
-        print(f"Ideal poisson process is complete. lambda = {self.ideal_lambda}")
+        hyper_param["arrival_rate"] = get_poisson_lambda(critical_sections)
+        return hyper_param
 
-    def build_repo(self, ltype, cs_ratio, id2type):
+    def build_repo(self, ltype, cs_ratio, id2type, cs_exp):
         super().configure_type(id2type)
         os.environ["LD_LIBRARY_PATH"] = ":".join([
             f"{self.repo}/.dylinx/lib",
             f"{os.environ['DYLINX_HOME']}/build/lib"
         ])
-        cmd = f"make clean; make single-hot cs_ratio={cs_ratio} ltype={ltype}"
+        cmd = f"make clean; make single-hot cs_ratio={cs_ratio} cs_exp={cs_exp} ltype={ltype}"
         proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
         log_msg = proc.stdout.read().decode("utf-8")
         err_msg = proc.stderr.read().decode("utf-8")
@@ -253,24 +247,37 @@ class DylinxSubject(BaseSubject):
             traces = list(map(lambda entry: TraceEntry(entry), entries))
             traces = list(filter(lambda trace: "critical" in trace.function, traces))
         critical_sections = group_cs(traces)
-        # self.practical_lambda = get_poisson_lambda(critical_sections)
-        # print(f"{ltype} lambda is {self.practical_lambda}")
-        handover_time_eval(critical_sections)
+        self.practical_lambda = get_poisson_lambda(critical_sections)
+        self.hot = handover_time_eval(critical_sections)
 
     def stop_repo(self):
         return
 
 def run(args):
 
-    subject = DylinxSubject("./compiler_commands.json", args.cs_ratio)
-    sites = subject.get_pluggable()
-
     if args.mode == "single":
-        sorted_keys = sorted(sites.keys())
-        id2type = { k: args.ltype for i, k in enumerate(sorted_keys) }
-        print(id2type)
-        subject.build_repo(args.ltype, args.cs_ratio, id2type)
-        subject.execute_repo(args.ltype)
+        print("Start experiment with no parallel section and tune duration exp from 10 ~ 20")
+        result = {
+            "no_parallel": {}
+        }
+        for exp in range(10, 20):
+            result["no_parallel"][exp] = {}
+            with DylinxSubject("./compiler_commands.json", 1., exp) as subject:
+                sites = subject.get_pluggable()
+                lock_types = ["PTHREADMTX", "TTAS", "BACKOFF"]
+                sorted_keys = sorted(sites.keys())
+                for lt in lock_types:
+                    id2type = { k: lt for i, k in enumerate(sorted_keys) }
+                    subject.build_repo(lt, 1., id2type, exp)
+                    subject.execute_repo(lt)
+                    result["no_parallel"][exp][lt] = {
+                        "hot": subject.hot,
+                        "lambda": subject.practical_lambda
+                    }
+                with open("exp-log.pkl", "wb") as pfile:
+                    pickle.dump(result, pfile)
+                print(f"Complete exp {exp}")
+            sys.exit()
 
     elif args.mode == "mix":
         raise NotImplemented
@@ -286,27 +293,6 @@ if __name__ == "__main__":
         choices=["single", "mix"],
         required=True,
         help="Configuring the operating mode."
-    )
-    parser.add_argument(
-        "-cs",
-        "--cs_ratio",
-        type=float,
-        required=True,
-        help="Configuring the critical section ratio."
-    )
-    parser.add_argument(
-        "-b",
-        "--bin",
-        type=int,
-        required=True,
-        help="Configuring the time duration unit of bin size when getting lambda"
-    )
-    parser.add_argument(
-        "-lt",
-        "--ltype",
-        type=str,
-        choices=ALLOWED_LOCK_TYPE,
-        help="Configure lock type."
     )
     args = parser.parse_args()
     run(args)
