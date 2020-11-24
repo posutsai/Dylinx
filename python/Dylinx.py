@@ -206,11 +206,3 @@ class BaseSubject(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def stop_repo(self):
         raise NotImplementedError
-
-class DylinxLog:
-    def __init__(self, xray_log, insertion_log):
-        pass
-    def parse_id(self, long_id):
-        type_id = c_types.c_int((long_id & 0xFFFFFFFF00000000) >> 32).value
-        ins_id  = c_types.c_int(long_id & 0x00000000FFFFFFFF).value
-        return type_id, ins_id

@@ -1,28 +1,14 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <string.h>
-#include <pthread.h>
-#include <math.h>
-#include <errno.h>
 #include <x86intrin.h>
 #include <float.h>
+#include <stdint.h>
+#include <math.h>
 #include <unistd.h>
-#include <time.h>
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
+#include "loading.h"
 
-#ifndef CS_DURATION_EXP
-#   error Error happens because CS_DURATION_EXP macro is not defined
-#endif
-
-#define TOTAL_NUM_OP (1 << CS_DURATION_EXP) * 1.
-#ifndef CS_RATIO
-#   error Error happens because CS_RATIO macro is not defined
-#endif
-
-#define REPEAT 1 << 12
 #define TEST_TIME 10
 
 typedef struct {
@@ -31,41 +17,6 @@ typedef struct {
     float max;
     float min;
 } stable_index_t;
-
-pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
-
-__attribute__((xray_always_instrument)) void critical_load() {
-    float limit = TOTAL_NUM_OP;
-    for (uint32_t i = 0; i < limit; i++) {
-        __asm__ volatile("" : "+g" (i) : :);
-    }
-}
-
-__attribute__((xray_always_instrument)) void critical_section() {
-#ifdef WITH_MUTEX
-    pthread_mutex_lock(&mtx);
-#endif
-    critical_load();
-#ifdef WITH_MUTEX
-    pthread_mutex_unlock(&mtx);
-#endif
-}
-
-__attribute__((xray_never_instrument)) void parallel_section() {
-    float limit = TOTAL_NUM_OP * ((1 - CS_RATIO) / 2.);
-    for (uint32_t i = 0; i < limit; i++) {
-        __asm__ volatile("" : "+g" (i) : :);
-    }
-}
-
- __attribute__((xray_never_instrument)) void *parallel_op(void *args) {
-    for (int i = 0; i < REPEAT; i++) {
-        parallel_section();
-        critical_section();
-        parallel_section();
-    }
-    return NULL;
-}
 
 void get_mean_std(float *ratio, int32_t len, stable_index_t *index) {
     index->min = FLT_MAX;
@@ -87,9 +38,8 @@ void get_mean_std(float *ratio, int32_t len, stable_index_t *index) {
 }
 
 int main(int argc, char *argv[]) {
-    pid_t tid = syscall(SYS_gettid);
-#ifdef TEST_DURATION
     printf("Duration ratio, cs: %f pa: %f\n", CS_RATIO, 1 - CS_RATIO);
+    pid_t tid = syscall(SYS_gettid);
     float ratio[TEST_TIME];
     stable_index_t index;
     for (int i = 0; i < TEST_TIME; i++) {
@@ -109,13 +59,5 @@ int main(int argc, char *argv[]) {
     }
     get_mean_std(ratio, TEST_TIME, &index);
     printf("mean: %f, std: %f, max: %f, min: %f, main_tid: %d\n", index.mean, index.std, index.max, index.min, tid);
-#endif // TEST_DURATION
-    uint32_t n_core = get_nprocs();
-    pthread_t threads[n_core];
-    for (uint32_t i = 0; i < n_core; i++)
-        pthread_create(&threads[i], NULL, parallel_op, NULL);
-    for (uint32_t i = 0; i < n_core; i++)
-        pthread_join(threads[i], NULL);
-    pthread_mutex_destroy(&mtx);
 	return 0;
 }

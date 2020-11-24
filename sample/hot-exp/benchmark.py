@@ -11,6 +11,7 @@ import glob
 import yaml
 import pickle
 import multiprocessing
+import cmath
 
 if f"{os.environ['DYLINX_HOME']}/python" not in sys.path:
     sys.path.append(f"{os.environ['DYLINX_HOME']}/python")
@@ -54,6 +55,21 @@ class CriticalSection:
         }
         return str(props)
 
+def solve_quadratic(a, b, c):
+    dis = (b**2) - (4 * a*c)
+    sol_0 = (-b + cmath.sqrt(dis))/(2 * a)
+    sol_1 = (-b - cmath.sqrt(dis))/(2 * a)
+    return sol_0, sol_1
+
+def compute_utility(l_eq):
+    def rho2serv_dur(rho):
+        serv_rate = arr_rate / rho
+        return 1. / serv_rate
+    rho_0, rho_1 = solve_quadratic(1, (-2 * l_eq - 2), 2 * l_eq)
+    assert(rho_0.imag == 0 and rho_1.imag == 0)
+    print(f"rho = ({rho_0}, {rho_1})")
+    return min(rho_0.real, rho_1.real)
+
 def group_cs(records):
     threads = {r.thread for r in records}
     logs = {t: [] for t in threads}
@@ -83,9 +99,9 @@ def poisson_map(args):
         stat[contending] = stat[contending] + 1 if contending in stat.keys() else stat.get(contending, 1)
     return stat
 
-def get_poisson_lambda(critical_sections, bin_size=50000):
+def get_poisson_lambda(critical_sections, bin_size=10000):
     durations = [cs.duration for cs in critical_sections]
-    print(f"mean duration of cs: {np.mean(durations)}")
+    print(f"mean duration of cs: {np.mean(durations):12.2f}")
     critical_sections = sorted(critical_sections, key=lambda cs: cs.attempt)
     start_index = 0
     stat = { n: 0 for n in range(multiprocessing.cpu_count())}
@@ -103,7 +119,7 @@ def get_poisson_lambda(critical_sections, bin_size=50000):
     print(stat)
     for n, occurrence in stat.items():
         accu += n * occurrence
-    return accu / sum(stat.values())
+    return accu / sum(stat.values()), np.mean(durations)
 
 def hot_map(args):
     start, critical_sections, cpu_count, acquire_order, attempt_order = args
@@ -152,7 +168,7 @@ def handover_time_eval(critical_sections):
                 "mean": np.mean(interval),
                 "std": np.std(interval),
             }
-            print(f"hot({n_thread:2d}) mean: {np.mean(interval):9.2f}, std: {np.std(interval):9.2f}")
+            print(f"hot({n_thread:10d}) occur: {len(interval):10d} mean: {np.mean(interval):9.2f}, std: {np.std(interval):9.2f}")
         else:
             hot_info[n_thread] = {
                 "occur": 0,
@@ -170,8 +186,7 @@ class DylinxSubject(BaseSubject):
         self.xray_option = "\"patch_premain=true xray_mode=xray-basic xray_logfile_base=xray-log/ \""
         self.ideal_cs_ratio = cs_ratio
         self.cs_exp = cs_exp
-        if cs_ratio != 1.:
-            self.hyper_param = self.perform_ideal_poisson(cs_ratio)
+        self.hyper_param = self.measure_ratio(cs_ratio, cs_exp)
         super().__init__(cc_path)
 
     def __enter__(self):
@@ -185,10 +200,10 @@ class DylinxSubject(BaseSubject):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.revert_repo()
 
-    def perform_ideal_poisson(self, cs_ratio, cs_exp):
+    def measure_ratio(self, cs_ratio, cs_exp):
         hyper_param = {}
         with subprocess.Popen(
-            f"make contentionless cs_ratio={cs_ratio:1.2f} cs_exp={cs_exp}; XRAY_OPTIONS={self.xray_option} ./bin/contentionless",
+            f"make ratio-measure cs_ratio={cs_ratio:1.2f} cs_exp={cs_exp}; ./bin/ratio-measure",
             shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE
         ) as proc:
             pattern = re.compile(r"mean: ([\d.]*), std: ([\d.]*), max: ([\d.]*), min: ([\d.]*), main_tid: ([\d.]*)")
@@ -197,22 +212,6 @@ class DylinxSubject(BaseSubject):
             ratio_log = {}
             ratio_log["mean"], ratio_log["std"], ratio_log["max"], ratio_log["min"], _ = re.findall(pattern, stdout)[0]
             hyper_param["cs_ratio"] = ratio_log
-        logs = glob.glob("xray-log/contentionless.*")
-        latest = sorted(logs, key=lambda l: os.path.getmtime(l))[-1]
-        with subprocess.Popen(
-            f"llvm-xray convert -f yaml -symbolize -instr_map=./bin/contentionless {latest} > /tmp/xray-ideal.yaml",
-            shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE
-        ) as proc:
-            stdout = proc.stdout.read().decode("utf-8")
-            stderr = proc.stderr.read().decode("utf-8")
-        with open("/tmp/xray-ideal.yaml", "r") as stream:
-            xray_log = stream.read()
-            pattern = re.compile(r"- { type: 0, func-id: \d+, function: (.*), cpu: (\d*), thread: (\d*). process: (\d*), kind: function-(enter|exit), tsc: (\d*), data: '' }")
-            entries = re.findall(pattern, xray_log)
-            traces = list(map(lambda entry: TraceEntry(entry), entries))
-            traces = list(filter(lambda trace: "critical" in trace.function, traces))
-        critical_sections = group_cs(traces)
-        hyper_param["arrival_rate"] = get_poisson_lambda(critical_sections)
         return hyper_param
 
     def build_repo(self, ltype, cs_ratio, id2type, cs_exp):
@@ -221,7 +220,7 @@ class DylinxSubject(BaseSubject):
             f"{self.repo}/.dylinx/lib",
             f"{os.environ['DYLINX_HOME']}/build/lib"
         ])
-        cmd = f"make clean; make single-hot cs_ratio={cs_ratio} cs_exp={cs_exp} ltype={ltype}"
+        cmd = f"make clean; make single-hot cs_ratio={cs_ratio} cs_exp={cs_exp} with_dlx=1"
         proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
         log_msg = proc.stdout.read().decode("utf-8")
         err_msg = proc.stderr.read().decode("utf-8")
@@ -229,13 +228,13 @@ class DylinxSubject(BaseSubject):
             print(err_msg)
 
     def execute_repo(self, ltype):
-        proc = subprocess.Popen(f"XRAY_OPTIONS={self.xray_option} ./bin/single-hot-{ltype}", stderr=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
+        proc = subprocess.Popen(f"XRAY_OPTIONS={self.xray_option} ./bin/single-hot", stderr=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
         log_msg = proc.stdout.read().decode("utf-8")
         err_msg = proc.stderr.read().decode("utf-8")
-        logs = glob.glob(f"xray-log/single-hot-{ltype}.*")
+        logs = glob.glob(f"xray-log/single-hot.*")
         latest = sorted(logs, key=lambda l: os.path.getmtime(l))[-1]
         with subprocess.Popen(
-            f"llvm-xray convert -f yaml -symbolize -instr_map=./bin/single-hot-{ltype} {latest} > /tmp/xray-simple-hot.yaml",
+            f"llvm-xray convert -f yaml -symbolize -instr_map=./bin/single-hot {latest} > /tmp/xray-simple-hot.yaml",
             shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE
         ) as proc:
             stdout = proc.stdout.read().decode("utf-8")
@@ -247,7 +246,8 @@ class DylinxSubject(BaseSubject):
             traces = list(map(lambda entry: TraceEntry(entry), entries))
             traces = list(filter(lambda trace: "critical" in trace.function, traces))
         critical_sections = group_cs(traces)
-        self.practical_lambda = get_poisson_lambda(critical_sections)
+        self.practical_lambda, _ = get_poisson_lambda(critical_sections)
+        self.utility = compute_utility(self.practical_lambda)
         self.hot = handover_time_eval(critical_sections)
 
     def stop_repo(self):
@@ -260,7 +260,7 @@ def run(args):
         result = {
             "no_parallel": {}
         }
-        for exp in range(10, 20):
+        for exp in np.arange(10, 18, 3):
             result["no_parallel"][exp] = {}
             with DylinxSubject("./compiler_commands.json", 1., exp) as subject:
                 sites = subject.get_pluggable()
@@ -272,12 +272,12 @@ def run(args):
                     subject.execute_repo(lt)
                     result["no_parallel"][exp][lt] = {
                         "hot": subject.hot,
-                        "lambda": subject.practical_lambda
+                        "lambda": subject.practical_lambda,
+                        "utility": subject.utility,
                     }
                 with open("exp-log.pkl", "wb") as pfile:
                     pickle.dump(result, pfile)
                 print(f"Complete exp {exp}")
-            sys.exit()
 
     elif args.mode == "mix":
         raise NotImplemented

@@ -843,7 +843,7 @@ public:
         stash_id = Dylinx::Instance().lock_i;
       }
       std::string var_name = d->getNameAsString();
-      if (!d->hasDefinition()) {
+      if (!d->hasDefinition() || d->hasExternalStorage()) {
         meta["modification_type"] = EXTERN_VAR_SYMBOL;
         meta["name"] = var_name;
         save2metas(cur_type, meta, src_id, sm);
