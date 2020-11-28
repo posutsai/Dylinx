@@ -12,10 +12,18 @@ import yaml
 import pickle
 import multiprocessing
 import cmath
+import math
+from scipy.stats import anderson
 
 if f"{os.environ['DYLINX_HOME']}/python" not in sys.path:
     sys.path.append(f"{os.environ['DYLINX_HOME']}/python")
 from Dylinx import BaseSubject, ALLOWED_LOCK_TYPE
+
+g_corelation = {
+    "real_perf": [],
+    "occupy_ratio": [],
+    "rho_ratio": [],
+}
 
 class TraceEntry:
     def __init__(self, groups):
@@ -68,7 +76,11 @@ def compute_utility(l_eq):
     rho_0, rho_1 = solve_quadratic(1, (-2 * l_eq - 2), 2 * l_eq)
     assert(rho_0.imag == 0 and rho_1.imag == 0)
     print(f"rho = ({rho_0}, {rho_1})")
-    return min(rho_0.real, rho_1.real)
+    return max(rho_0.real, rho_1.real)
+
+def poisson_prob(l, duration, k):
+    m = duration * l
+    return ((m ** k) * math.exp(-1 * m)) / math.factorial(k)
 
 def group_cs(records):
     threads = {r.thread for r in records}
@@ -99,9 +111,11 @@ def poisson_map(args):
         stat[contending] = stat[contending] + 1 if contending in stat.keys() else stat.get(contending, 1)
     return stat
 
-def get_poisson_lambda(critical_sections, bin_size=10000):
+def get_system_entities(critical_sections, bin_size):
     durations = [cs.duration for cs in critical_sections]
+    possessions = [cs.possession for cs in critical_sections]
     print(f"mean duration of cs: {np.mean(durations):12.2f}")
+    print(f"mean possession of cs: {np.mean(possessions):12.2f}")
     critical_sections = sorted(critical_sections, key=lambda cs: cs.attempt)
     start_index = 0
     stat = { n: 0 for n in range(multiprocessing.cpu_count())}
@@ -131,18 +145,19 @@ def hot_map(args):
     for i in range(start * chop, (start + 1) * chop if start != cpu_count - 1 else (start + 1) * chop - 1):
         contending = 0
         switch_out = critical_sections[acquire_order[i]]
-        hot = critical_sections[acquire_order[i + 1]].acquire - switch_out.release
-        if hot < 0:
-            print(switch_out)
-            print(critical_sections[i + 1])
         for attempt_i in attempt_order[scan_origin:]:
             scanning_cs = critical_sections[attempt_i]
             if scanning_cs.attempt > switch_out.deviate:
                 break
             if scanning_cs.attempt <= switch_out.release and scanning_cs.acquire > switch_out.release:
                 contending += 1
-            if scanning_cs.deviate < switch_out.attempt:
-                scan_origin += 1
+        if contending == 0:
+            hot = critical_sections[acquire_order[i + 1]].acquire - critical_sections[acquire_order[i + 1]].attempt
+        else:
+            hot = critical_sections[acquire_order[i + 1]].acquire - switch_out.release
+        if hot < 0:
+            print(switch_out)
+            print(critical_sections[i + 1])
         if contending not in stat.keys():
             stat[contending] = []
             stat[contending].append(hot)
@@ -168,7 +183,7 @@ def handover_time_eval(critical_sections):
                 "mean": np.mean(interval),
                 "std": np.std(interval),
             }
-            print(f"hot({n_thread:10d}) occur: {len(interval):10d} mean: {np.mean(interval):9.2f}, std: {np.std(interval):9.2f}")
+            print(f"hot({n_thread:3d}) occur: {len(interval):8d} mean: {np.mean(interval):9.2f}, std: {np.std(interval):9.2f}, max: {max(interval):10d}, min: {min(interval):8d}")
         else:
             hot_info[n_thread] = {
                 "occur": 0,
@@ -180,25 +195,34 @@ def handover_time_eval(critical_sections):
 
 class DylinxSubject(BaseSubject):
 
-    def __init__(self, cc_path, cs_ratio, cs_exp):
+    def __init__(self, cc_path, cs_ratio, cs_exp, bin_size):
         self.repo = os.path.abspath(os.path.dirname(cc_path))
         self.sample_dir = os.path.abspath(os.path.dirname('.'))
         self.xray_option = "\"patch_premain=true xray_mode=xray-basic xray_logfile_base=xray-log/ \""
         self.ideal_cs_ratio = cs_ratio
+        self.bin_size = bin_size
         self.cs_exp = cs_exp
+        self.corelation = {
+            "x": [],
+            "y": [],
+        }
         self.hyper_param = self.measure_ratio(cs_ratio, cs_exp)
+        self.ideal_entity, self.ideal_cs = self.measure_cs(cs_ratio, cs_exp)
+        self.ideal_utility = self.ideal_entity * (self.ideal_cs / bin_size)
+        print(f"ideal_lambda={self.ideal_entity} ideal utility is {self.ideal_utility}")
         super().__init__(cc_path)
 
     def __enter__(self):
         if self.ideal_cs_ratio != 1.:
             print("Hyperparameter within lockless process is complete")
-            print(f"ideal cs_ratio={cs_ratio:3.2f}, cs_duration={2 ** (self.cs_exp - 1)}")
+            print(f"ideal cs_ratio={self.ideal_cs_ratio:3.2f}, cs_duration={2 ** (self.cs_exp - 1)}")
             cs_ratio = self.hyper_param['cs_ratio']
             print(f"measured cs_ratio max={cs_ratio['max']}, min={cs_ratio['min']}, mean={cs_ratio['mean']}, std={cs_ratio['std']}")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.revert_repo()
+        pass
 
     def measure_ratio(self, cs_ratio, cs_exp):
         hyper_param = {}
@@ -214,6 +238,32 @@ class DylinxSubject(BaseSubject):
             hyper_param["cs_ratio"] = ratio_log
         return hyper_param
 
+    def measure_cs(self, cs_ratio, cs_exp):
+        with subprocess.Popen(
+            f"make lockless cs_ratio={cs_ratio:1.2f} cs_exp={cs_exp}; XRAY_OPTIONS={self.xray_option} ./bin/lockless",
+            shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE
+        ) as proc:
+            log_msg = proc.stdout.read().decode("utf-8")
+            err_msg = proc.stderr.read().decode("utf-8")
+        logs = glob.glob(f"xray-log/lockless.*")
+        latest = sorted(logs, key=lambda l: os.path.getmtime(l))[-1]
+        with subprocess.Popen(
+            f"llvm-xray convert -f yaml -symbolize -instr_map=./bin/lockless {latest} > /tmp/xray-lockless.yaml",
+            shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE
+        ) as proc:
+            stdout = proc.stdout.read().decode("utf-8")
+            stderr = proc.stderr.read().decode("utf-8")
+        with open("/tmp/xray-lockless.yaml") as stream:
+            xray_log = stream.read()
+            pattern = re.compile(r"- { type: 0, func-id: \d+, function: (.*), cpu: (\d*), thread: (\d*). process: (\d*), kind: function-(enter|exit), tsc: (\d*), data: '' }")
+            entries = re.findall(pattern, xray_log)
+            traces = list(map(lambda entry: TraceEntry(entry), entries))
+            traces = list(filter(lambda trace: "critical" in trace.function, traces))
+        critical_sections = group_cs(traces)
+        entity, mean = get_system_entities(critical_sections, self.bin_size)
+        return entity, mean
+
+
     def build_repo(self, ltype, cs_ratio, id2type, cs_exp):
         super().configure_type(id2type)
         os.environ["LD_LIBRARY_PATH"] = ":".join([
@@ -228,6 +278,14 @@ class DylinxSubject(BaseSubject):
             print(err_msg)
 
     def execute_repo(self, ltype):
+        with subprocess.Popen("time ./bin/single-hot", stderr=subprocess.PIPE, stdout=subprocess.PIPE, shell=True) as proc:
+            pattern = re.compile(r"duration ([\d.]*)s")
+            stdout = proc.stdout.read().decode("utf-8")
+            stderr = proc.stderr.read().decode("utf-8")
+            r = re.findall(pattern, stdout)[0]
+            print(r)
+            real_perf = float(r)
+            g_corelation["real_perf"].append(real_perf)
         proc = subprocess.Popen(f"XRAY_OPTIONS={self.xray_option} ./bin/single-hot", stderr=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
         log_msg = proc.stdout.read().decode("utf-8")
         err_msg = proc.stderr.read().decode("utf-8")
@@ -246,9 +304,26 @@ class DylinxSubject(BaseSubject):
             traces = list(map(lambda entry: TraceEntry(entry), entries))
             traces = list(filter(lambda trace: "critical" in trace.function, traces))
         critical_sections = group_cs(traces)
-        self.practical_lambda, _ = get_poisson_lambda(critical_sections)
-        self.utility = compute_utility(self.practical_lambda)
+        self.system_entity, _ = get_system_entities(critical_sections, self.bin_size)
+        print(f"practical_lambda = {self.system_entity}")
+        self.utility = compute_utility(self.system_entity)
         self.hot = handover_time_eval(critical_sections)
+        total_handover_times = (2 ** 8) * 64 -1
+        arrival_rate = self.utility / self.ideal_cs
+        sum_hot = 0.
+        for n_thread, props in self.hot.items():
+            p = poisson_prob(arrival_rate, self.ideal_cs, n_thread)
+            sum_hot += p * props["mean"]
+        with open("save/indicator.log", "a") as handler:
+            handler.write(
+                f"lock={ltype:12s}, "
+                f"ideal_ratio={self.ideal_cs_ratio:2.2f}, mean_ratio={self.hyper_param['cs_ratio']['mean']}, exp={2**self.cs_exp:8d}, "
+                f"sum_hot={sum_hot:9.4f}, occupy_ratio={sum_hot / self.ideal_cs:2.6f} "
+                f"utility={self.utility:4.2f}, rho_ratio={self.utility / self.ideal_utility: 2.6f}\n"
+            )
+        g_corelation["occupy_ratio"].append(sum_hot / self.ideal_cs)
+        g_corelation["rho_ratio"].append(self.utility / self.ideal_utility)
+
 
     def stop_repo(self):
         return
@@ -260,24 +335,25 @@ def run(args):
         result = {
             "no_parallel": {}
         }
-        for exp in np.arange(10, 18, 3):
-            result["no_parallel"][exp] = {}
-            with DylinxSubject("./compiler_commands.json", 1., exp) as subject:
-                sites = subject.get_pluggable()
-                lock_types = ["PTHREADMTX", "TTAS", "BACKOFF"]
-                sorted_keys = sorted(sites.keys())
-                for lt in lock_types:
-                    id2type = { k: lt for i, k in enumerate(sorted_keys) }
-                    subject.build_repo(lt, 1., id2type, exp)
-                    subject.execute_repo(lt)
-                    result["no_parallel"][exp][lt] = {
-                        "hot": subject.hot,
-                        "lambda": subject.practical_lambda,
-                        "utility": subject.utility,
-                    }
-                with open("exp-log.pkl", "wb") as pfile:
-                    pickle.dump(result, pfile)
-                print(f"Complete exp {exp}")
+        open("save/indicator.log", "w").close()
+        for ratio in np.arange(0.2, 1.2, 0.2):
+            for exp in np.arange(10, 14, 1):
+                result["no_parallel"][exp] = {}
+                with DylinxSubject("./compiler_commands.json", ratio, exp, 2000) as subject:
+                    sites = subject.get_pluggable()
+                    lock_types = ["PTHREADMTX", "TTAS", "BACKOFF"]
+                    sorted_keys = sorted(sites.keys())
+                    for lt in lock_types:
+                        id2type = { k: lt for i, k in enumerate(sorted_keys) }
+                        subject.build_repo(lt, ratio, id2type, exp)
+                        subject.execute_repo(lt)
+                        result["no_parallel"][exp][lt] = {
+                            "hot": subject.hot,
+                            # "utility": subject.utility,
+                        }
+                    with open("exp-log.pkl", "wb") as pfile:
+                        pickle.dump(result, pfile)
+                    print(f"Complete exp {exp}")
 
     elif args.mode == "mix":
         raise NotImplemented
@@ -296,4 +372,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     run(args)
+    with open("corelation_data.pkl", "wb") as pfile:
+        pickle.dump(g_corelation, pfile)
 

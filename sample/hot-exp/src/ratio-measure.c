@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <x86intrin.h>
 #include <float.h>
 #include <stdint.h>
@@ -7,6 +8,7 @@
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
+#include <time.h>
 #include "loading.h"
 
 #define TEST_TIME 10
@@ -42,6 +44,7 @@ int main(int argc, char *argv[]) {
     pid_t tid = syscall(SYS_gettid);
     float ratio[TEST_TIME];
     stable_index_t index;
+    srand(time(0));
     for (int i = 0; i < TEST_TIME; i++) {
         uint64_t start = __rdtsc();
         parallel_section();
