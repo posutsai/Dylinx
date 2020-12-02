@@ -95,23 +95,44 @@ def group_cs(records):
             critical_sections.append(CriticalSection(ordered[i*4: i*4 + 4]))
     return critical_sections
 
+# Compare functions only allow to output multiple kinds of values, depending
+# on costomized logic
+# A. output =  O: Satisfy break condition
+# B. output =  1: Increment counter
+# C. output =  2: Shift pointer
+# D. output = -1: Default return
+def arrival_cmp(b, bin_size, cs):
+    if b <= cs.attempt < b + bin_size:
+        return 1
+    if cs.attempt > b + bin_size:
+        return 0
+    return -1
+
+def overlap_cmp(b, bin_size, cs):
+    if cs.attempt > b + bin_size:
+        return 0
+    if (cs.attempt <= b and cs.deviate > b) or (cs.attempt <= b + bin_size and cs.deviate > b + bin_size):
+        return 1
+    return -1
+
 def poisson_map(args):
-    bins, critical_sections, bin_size = args
+    bins, critical_sections, bin_size, compare_op = args
     stat = { n: 0 for n in range(multiprocessing.cpu_count())}
     start_index = 0
     for b in bins:
         contending = 0
         for cs in critical_sections[start_index:]:
-            if cs.attempt > b + bin_size:
+            op_output = compare_op(b, bin_size, cs)
+            if op_output == 0:
                 break
-            if (cs.attempt <= b and cs.deviate > b) or (cs.attempt <= b + bin_size and cs.deviate > b + bin_size):
+            if op_output == 1:
                 contending += 1
-            if cs.deviate < b:
+            if op_output == 2:
                 start_index += 1
         stat[contending] = stat[contending] + 1 if contending in stat.keys() else stat.get(contending, 1)
     return stat
 
-def get_system_entities(critical_sections, bin_size):
+def count_mean_by_op(critical_sections, bin_size, compare_op):
     durations = [cs.duration for cs in critical_sections]
     possessions = [cs.possession for cs in critical_sections]
     print(f"mean duration of cs: {np.mean(durations):12.2f}")
@@ -124,8 +145,8 @@ def get_system_entities(critical_sections, bin_size):
     chop = len(bins) // multiprocessing.cpu_count()
     args = []
     for i in range(multiprocessing.cpu_count()):
-        args.append((bins[chop * i: chop * (i + 1)], critical_sections, bin_size))
-    args.append((residue, critical_sections, bin_size))
+        args.append((bins[chop * i: chop * (i + 1)], critical_sections, bin_size, compare_op))
+    args.append((residue, critical_sections, bin_size, compare_op))
     parallel_res = g_pool.map(poisson_map, args)
     for k in stat.keys():
         stat[k] = sum([ p[k] for p in parallel_res ])
@@ -133,7 +154,7 @@ def get_system_entities(critical_sections, bin_size):
     print(stat)
     for n, occurrence in stat.items():
         accu += n * occurrence
-    return accu / sum(stat.values()), np.mean(durations)
+    return accu / sum(stat.values()), np.mean(possessions), np.mean(durations)
 
 def hot_map(args):
     start, critical_sections, cpu_count, acquire_order, attempt_order = args
@@ -206,10 +227,11 @@ class DylinxSubject(BaseSubject):
             "x": [],
             "y": [],
         }
-        self.hyper_param = self.measure_ratio(cs_ratio, cs_exp)
-        self.ideal_entity, self.ideal_cs = self.measure_cs(cs_ratio, cs_exp)
-        self.ideal_utility = self.ideal_entity * (self.ideal_cs / bin_size)
-        print(f"ideal_lambda={self.ideal_entity} ideal utility is {self.ideal_utility}")
+        self.hyper_param = self.measure_ideal_ratio(cs_ratio, cs_exp)
+        self.ideal_arrival_avg, self.ideal_possess_avg = self.measure_ideal_cs(cs_ratio, cs_exp)
+        #! Reconsider whether to add bin size
+        self.ideal_utility = self.ideal_arrival_avg * self.ideal_possess_avg
+        print(f"ideal_lambda={self.ideal_arrival_avg} ideal utility is {self.ideal_utility}")
         super().__init__(cc_path)
 
     def __enter__(self):
@@ -224,7 +246,7 @@ class DylinxSubject(BaseSubject):
         self.revert_repo()
         pass
 
-    def measure_ratio(self, cs_ratio, cs_exp):
+    def measure_ideal_ratio(self, cs_ratio, cs_exp):
         hyper_param = {}
         with subprocess.Popen(
             f"make ratio-measure cs_ratio={cs_ratio:1.2f} cs_exp={cs_exp}; ./bin/ratio-measure",
@@ -238,7 +260,7 @@ class DylinxSubject(BaseSubject):
             hyper_param["cs_ratio"] = ratio_log
         return hyper_param
 
-    def measure_cs(self, cs_ratio, cs_exp):
+    def measure_ideal_cs(self, cs_ratio, cs_exp):
         with subprocess.Popen(
             f"make lockless cs_ratio={cs_ratio:1.2f} cs_exp={cs_exp}; XRAY_OPTIONS={self.xray_option} ./bin/lockless",
             shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE
@@ -260,8 +282,8 @@ class DylinxSubject(BaseSubject):
             traces = list(map(lambda entry: TraceEntry(entry), entries))
             traces = list(filter(lambda trace: "critical" in trace.function, traces))
         critical_sections = group_cs(traces)
-        entity, mean = get_system_entities(critical_sections, self.bin_size)
-        return entity, mean
+        arrival_avg, possession_avg, duration_avg = count_mean_by_op(critical_sections, self.bin_size, arrival_cmp)
+        return arrival_avg, possession_avg
 
 
     def build_repo(self, ltype, cs_ratio, id2type, cs_exp):
@@ -304,24 +326,24 @@ class DylinxSubject(BaseSubject):
             traces = list(map(lambda entry: TraceEntry(entry), entries))
             traces = list(filter(lambda trace: "critical" in trace.function, traces))
         critical_sections = group_cs(traces)
-        self.system_entity, _ = get_system_entities(critical_sections, self.bin_size)
+        self.system_entity, possess_avg, duration_avg = count_mean_by_op(critical_sections, self.bin_size, overlap_cmp)
         print(f"practical_lambda = {self.system_entity}")
         self.utility = compute_utility(self.system_entity)
         self.hot = handover_time_eval(critical_sections)
         total_handover_times = (2 ** 8) * 64 -1
-        arrival_rate = self.utility / self.ideal_cs
+        arrival_rate = self.utility / self.ideal_possess_avg
         sum_hot = 0.
         for n_thread, props in self.hot.items():
-            p = poisson_prob(arrival_rate, self.ideal_cs, n_thread)
+            p = poisson_prob(arrival_rate, self.ideal_possess_avg, n_thread)
             sum_hot += p * props["mean"]
         with open("save/indicator.log", "a") as handler:
             handler.write(
                 f"lock={ltype:12s}, "
                 f"ideal_ratio={self.ideal_cs_ratio:2.2f}, mean_ratio={self.hyper_param['cs_ratio']['mean']}, exp={2**self.cs_exp:8d}, "
-                f"sum_hot={sum_hot:9.4f}, occupy_ratio={sum_hot / self.ideal_cs:2.6f} "
+                f"sum_hot={sum_hot:9.4f}, occupy_ratio={sum_hot / self.ideal_possess_avg:2.6f} "
                 f"utility={self.utility:4.2f}, rho_ratio={self.utility / self.ideal_utility: 2.6f}\n"
             )
-        g_corelation["occupy_ratio"].append(sum_hot / self.ideal_cs)
+        g_corelation["occupy_ratio"].append(sum_hot / self.ideal_possess_avg)
         g_corelation["rho_ratio"].append(self.utility / self.ideal_utility)
 
 
