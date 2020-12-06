@@ -261,6 +261,7 @@ class DylinxSubject(BaseSubject):
         return hyper_param
 
     def measure_ideal_cs(self, cs_ratio, cs_exp):
+        print(f"make lockless cs_ratio={cs_ratio:1.2f} cs_exp={cs_exp}; XRAY_OPTIONS={self.xray_option} ./bin/lockless")
         with subprocess.Popen(
             f"make lockless cs_ratio={cs_ratio:1.2f} cs_exp={cs_exp}; XRAY_OPTIONS={self.xray_option} ./bin/lockless",
             shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE
@@ -358,7 +359,7 @@ def run(args):
             "no_parallel": {}
         }
         open("save/indicator.log", "w").close()
-        for ratio in np.arange(0.2, 1.2, 0.2):
+        for ratio in np.arange(0.8, 1.2, 0.2):
             for exp in np.arange(10, 14, 1):
                 result["no_parallel"][exp] = {}
                 with DylinxSubject("./compiler_commands.json", ratio, exp, 2000) as subject:

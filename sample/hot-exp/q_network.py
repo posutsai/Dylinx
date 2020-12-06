@@ -1,12 +1,54 @@
 #!/usr/local/bin/python3
 import numpy as np
+from scipy.special import beta
+from scipy.special import factorial
 
-class Queue:
+def solve_lock_overhead(delta, q_model, duration):
+    eq_cs = q_model.critical_time + delta
+    serv_rate = 1. / eq_cs
+    rho = q_model.exp_factor / serv_rate
+    p0 = beta(q_model.n_core, 1. / rho)
+    us = 1 - p0
+    return (1. / serv_rate) * ((q_model.n_core / us) - (1 + rho) / rho) - duration
+
+class MachineRepairQueue:
+    def __init__(self, critical_time, ratio, n_core):
+        self.critical_time = critical_time
+        self.parallel_time = critical_time / ratio
+        self.exp_factor = 1. / self.parallel_time
+        self.serv_rate = 1. / critical_time
+        self.rho = self.exp_factor / self.serv_rate
+        self.n_core = n_core
+
+    # def waiting_time(self):
+    #     utility = self.utility
+    #     n_core = self.n_core
+    #     arr_rate = self.arr_rate
+    #     assert(self.utility != 1)
+    #     p0 = (1 - utility) / (1 - utility ** (n_core + 1))
+    #     L = (utility / (1 - utility)) * ((n_core + 1) * utility ** (n_core + 1) / (1 - utility ** n_core + 1))
+    #     return L / (arr_rate * (1 - utility ** n_core * p0))
+
+    # def approximate_waiting_time(self):
+    #     p0 = beta(self.n_core, 1. / self.rho)
+    #     us = 1 - p0
+    #     return (1. / self.serv_rate) * ((self.n_core / us) - (1 + self.rho) / self.rho)
+    #
+    # def compute_waiting_time(self):
+    #     denom = 0.
+    #     for i in range(self.n_core + 1):
+    #         denom += (factorial(self.n_core) / factorial(self.n_core - i)) * (self.exp_factor / self.serv_rate) ** i
+    #     p0 = 1. / denom
+    #     us = 1 - p0
+    #     return (1. / self.serv_rate) * ((self.n_core / us) - (1 + self.rho) / self.rho)
+
+
+class RouteQueue:
     def __init__(self, duration):
         self.duration = duration
         self.serv_rate = 1. / self.duration
 
-class InfiniteQueue(Queue):
+class RouteInfiniteQueue(RouteQueue):
     def __init__(self, duration):
         self.duration = duration
         self.serv_rate = float("inf")
@@ -62,16 +104,6 @@ class QNetwork:
         self.lut["Throughput"][member] = output
         return output
 
-q_p = InfiniteQueue(3)
-q_1 = Queue(1)
-q_2 = Queue(2)
-P = [
-    [0., 0.4, 0.6],
-    [1., 0., 0.],
-    [1., 0., 0.],
-]
-network = QNetwork([q_p, q_1, q_2], P)
-print(network.waiting_time(1, 1))
-print(network.waiting_time(2, 1))
-print(network.waiting_time(1, 80))
-print(network.waiting_time(2, 80))
+if __name__ == "__main__":
+    mrq = MachineRepairQueue(236745.09, 0.5, 32)
+    print(newton(solve_lock_overhead, 0, args=[mrq]))

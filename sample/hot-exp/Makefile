@@ -20,6 +20,15 @@ lockless: src/single-hot.c
 	$(CC) -c $^ -o bin/$@.o $(INCLUDE_FLAG) -DCS_RATIO=${cs_ratio} -DCS_DURATION_EXP=${cs_exp} -O0 -fxray-instrument
 	$(CC) bin/$@.o -o bin/$@ $(LD_FLAG) $(DYLINX_FLAG) -fxray-instrument
 
+lock-overhead: src/machine-repair.c
+	$(CC) -c $^ -o bin/$@.o $(INCLUDE_FLAG) -DWITH_MUTEX -DCS_RATIO=${cs_ratio} -DN_CORE=${n_core} -DNUM_THREAD=${num_thread} -O0 -fxray-instrument
+	$(CC) bin/$@.o -o bin/$@ $(LD_FLAG) $(DYLINX_FLAG) -fxray-instrument
+
+ideal-measure: src/machine-repair.c
+	$(CC) -c $^ -o bin/$@.o $(INCLUDE_FLAG) -DCS_RATIO=${cs_ratio} -DN_CORE=${n_core} -O0 -fxray-instrument
+	$(CC) bin/$@.o -o bin/$@ $(LD_FLAG) $(DYLINX_FLAG) -fxray-instrument
+
+
 clean:
 	/bin/rm -rf bin/*
 	/bin/rm -rf xray-log/*
