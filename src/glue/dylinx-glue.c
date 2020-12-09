@@ -285,13 +285,13 @@ int dlx_forward_trylock(int64_t long_id, void *lock, char *var_name, char *file,
   return mtx->methods->trylock_fptr(mtx->lock_obj);
 }
 
-int dlx_error_cond_wait(pthread_cond_t *cond, void *lock) {
+int dlx_error_cond_wait(int64_t long_id, pthread_cond_t *cond, void *lock) {
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   if (lock && mtx->check_code == 0x32CB00B5) {
 #if __DYLINX_VERBOSE__ <= DYLINX_VERBOSE_WAR
     printf("[ WARNING ] entering dlx_error_cond_wait but check code is confirmed\n");
 #endif
-    return dlx_forward_cond_wait(cond, lock);
+    return dlx_forward_cond_wait(long_id, cond, lock);
   }
   char error_msg[1000];
   sprintf(
@@ -303,18 +303,18 @@ int dlx_error_cond_wait(pthread_cond_t *cond, void *lock) {
   return -1;
 }
 
-int dlx_forward_cond_wait(pthread_cond_t *cond, void *lock) {
+int dlx_forward_cond_wait(int64_t long_id, pthread_cond_t *cond, void *lock) {
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   return mtx->methods->cond_timedwait_fptr(cond, mtx->lock_obj, 0);
 }
 
-int dlx_error_cond_timedwait(pthread_cond_t *cond, void *lock, const struct timespec *time) {
+int dlx_error_cond_timedwait(int64_t long_id, pthread_cond_t *cond, void *lock, const struct timespec *time) {
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   if (lock && mtx->check_code == 0x32CB00B5) {
 #if __DYLINX_VERBOSE__ <= DYLINX_VERBOSE_WAR
     printf("[ WARNING ] entering dlx_error_cond_timedwait but check code is confirmed\n");
 #endif
-    return dlx_forward_cond_timedwait(cond, lock, time);
+    return dlx_forward_cond_timedwait(long_id, cond, lock, time);
   }
   HANDLING_ERROR(
     "Untrackable lock is trying to wait for condtion variable.\n"
@@ -324,7 +324,7 @@ int dlx_error_cond_timedwait(pthread_cond_t *cond, void *lock, const struct time
   return -1;
 }
 
-int dlx_forward_cond_timedwait(pthread_cond_t *cond, void *lock, const struct timespec *time) {
+int dlx_forward_cond_timedwait(int64_t long_id, pthread_cond_t *cond, void *lock, const struct timespec *time) {
   dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)lock;
   return mtx->methods->cond_timedwait_fptr(cond, mtx->lock_obj, time);
 }

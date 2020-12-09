@@ -1,46 +1,47 @@
 #!/usr/local/bin/python3
+from math import exp
 import numpy as np
-from scipy.special import beta
+from scipy.special import comb
 from scipy.special import factorial
 
-def solve_lock_overhead(delta, q_model, duration):
+def solve_lock_overhead(delta, q_model, measured_resp):
     eq_cs = q_model.critical_time + delta
-    serv_rate = 1. / eq_cs
-    rho = q_model.exp_factor / serv_rate
-    p0 = beta(q_model.n_core, 1. / rho)
-    us = 1 - p0
-    return (1. / serv_rate) * ((q_model.n_core / us) - (1 + rho) / rho) - duration
+    return compute_response_time(eq_cs, q_model.parallel_time, q_model.n_core) - measured_resp
 
-class MachineRepairQueue:
+def compute_response_time(critical_time, parallel_time, n_core):
+    # s_func is the Laplace-Stieltjes Transform of
+    # dirac delta function.
+    def s_func(x):
+        return x * exp(-1 * x * critical_time)
+
+    def b_series(n, alpha):
+        assert(n < n_core)
+        if n == 0:
+            return 1
+        else:
+            pi = np.float128(1.)
+            for i in range(1, n + 1):
+                pi = pi * (1 - s_func(i * alpha)) / s_func(i * alpha)
+            return pi
+
+    sigma = np.float128(0.)
+    alpha = 1. / parallel_time
+    for n in range(n_core):
+        sigma += comb(n_core - 1, n) * b_series(n, alpha)
+    p0 = 1. / (1 + n_core * critical_time  * sigma / parallel_time)
+    a = 1 - p0
+    exp_factor = a / critical_time
+    return n_core / exp_factor - parallel_time
+
+class MachineRepairGeneralQueue:
+    # Response_time = waiting_time + repairing_time
     def __init__(self, critical_time, ratio, n_core):
         self.critical_time = critical_time
         self.parallel_time = critical_time / ratio
-        self.exp_factor = 1. / self.parallel_time
-        self.serv_rate = 1. / critical_time
-        self.rho = self.exp_factor / self.serv_rate
         self.n_core = n_core
-
-    # def waiting_time(self):
-    #     utility = self.utility
-    #     n_core = self.n_core
-    #     arr_rate = self.arr_rate
-    #     assert(self.utility != 1)
-    #     p0 = (1 - utility) / (1 - utility ** (n_core + 1))
-    #     L = (utility / (1 - utility)) * ((n_core + 1) * utility ** (n_core + 1) / (1 - utility ** n_core + 1))
-    #     return L / (arr_rate * (1 - utility ** n_core * p0))
-
-    # def approximate_waiting_time(self):
-    #     p0 = beta(self.n_core, 1. / self.rho)
-    #     us = 1 - p0
-    #     return (1. / self.serv_rate) * ((self.n_core / us) - (1 + self.rho) / self.rho)
-    #
-    # def compute_waiting_time(self):
-    #     denom = 0.
-    #     for i in range(self.n_core + 1):
-    #         denom += (factorial(self.n_core) / factorial(self.n_core - i)) * (self.exp_factor / self.serv_rate) ** i
-    #     p0 = 1. / denom
-    #     us = 1 - p0
-    #     return (1. / self.serv_rate) * ((self.n_core / us) - (1 + self.rho) / self.rho)
+        self.alpha = 1. / self.parallel_time
+    def lockless_response_time(self):
+        return compute_response_time(self.critical_time, self.parallel_time, self.n_core)
 
 
 class RouteQueue:

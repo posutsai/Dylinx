@@ -28,14 +28,14 @@ target("dylinx")
 target_end()
 
 target("dlx-glue")
-  set_kind("shared")
+  set_kind("static")
   add_files("src/glue/*.c|dylinx-init.c")
   add_includedirs("src/glue")
   add_defines("__DYLINX_VERBOSE__=3")
   set_targetdir("build/lib")
   set_languages("c11")
   set_toolset("cc", "/usr/local/bin/clang")
-  add_cflags("-I/usr/local/lib/clang/10.0.0/include")
-  add_ldflags("-lpthread")
+  add_cflags("-I/usr/local/lib/clang/10.0.0/include", "-fxray-instrument")
+
 target_end()
 

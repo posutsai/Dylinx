@@ -59,6 +59,10 @@
       FE_2,FE_1,FE_0,                                                       \
   )(action,__VA_ARGS__)
 
+#define XRAY_ATTR                                                                 \
+  __attribute__((xray_always_instrument))                                         \
+  __attribute__((xray_log_args(1)))
+
 typedef struct InjectedInterfaces {
   int (*init_fptr)(void **, pthread_mutexattr_t *);
   int (*lock_fptr)(void *);
@@ -148,18 +152,18 @@ int dlx_error_arr_init(void *, uint32_t, int type_id, char *var_name, char *file
 void *dlx_error_obj_init(uint32_t, uint32_t, uint32_t *, uint32_t, void **, int *type_ids, char *, int);
 void *dlx_struct_obj_init(uint32_t, uint32_t, uint32_t *, uint32_t, void **, int *type_ids, char *, int);
 
-int dlx_error_enable(int64_t, void *, char *, char *, int);
-int dlx_error_disable(int64_t, void *, char *, char *, int);
+XRAY_ATTR int dlx_error_enable(int64_t, void *, char *, char *, int);
+XRAY_ATTR int dlx_error_disable(int64_t, void *, char *, char *, int);
 int dlx_error_destroy(int64_t, void *);
 int dlx_error_trylock(int64_t, void *, char *, char *, int);
-int dlx_error_cond_timedwait(pthread_cond_t *, void *, const struct timespec *);
-int dlx_error_cond_wait(pthread_cond_t *, void *);
-int dlx_forward_enable(int64_t, void *, char *, char *, int);
-int dlx_forward_disable(int64_t, void *, char *, char *, int);
-int dlx_forward_destroy(int64_t, void *);
-int dlx_forward_trylock(int64_t, void *, char *, char *, int);
-int dlx_forward_cond_wait(pthread_cond_t *, void *);
-int dlx_forward_cond_timedwait(pthread_cond_t *, void *, const struct timespec *);
+int dlx_error_cond_timedwait(int64_t, pthread_cond_t *, void *, const struct timespec *);
+int dlx_error_cond_wait(int64_t, pthread_cond_t *, void *);
+XRAY_ATTR int dlx_forward_enable(int64_t, void *, char *, char *, int);
+XRAY_ATTR int dlx_forward_disable(int64_t, void *, char *, char *, int);
+XRAY_ATTR int dlx_forward_destroy(int64_t, void *);
+XRAY_ATTR int dlx_forward_trylock(int64_t, void *, char *, char *, int);
+XRAY_ATTR int dlx_forward_cond_wait(int64_t, pthread_cond_t *, void *);
+XRAY_ATTR int dlx_forward_cond_timedwait(int64_t, pthread_cond_t *, void *, const struct timespec *);
 
 typedef struct UserDefStruct {
   void *dummy;
@@ -245,7 +249,7 @@ extern uint32_t g_ins_id;
   DLX_GENERIC_COND_WAIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                         \
   dlx_generic_lock_t *: dlx_forward_cond_wait,                                                               \
   default: dlx_error_cond_wait                                                                               \
-)(cond, mtx)
+)(((dlx_generic_lock_t *)entity)->ind.long_id, cond, mtx)
 
 #define DLX_GENERIC_COND_TIMEDWAIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_cond_timedwait,
 #define DLX_GENERIC_COND_TIMEDWAIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_COND_TIMEDWAIT_TYPE_REDIRECT, __VA_ARGS__)
@@ -253,6 +257,6 @@ extern uint32_t g_ins_id;
   DLX_GENERIC_COND_TIMEDWAIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                   \
   dlx_generic_lock_t *: dlx_forward_cond_timedwait,                                                         \
   default: dlx_error_cond_timedwait                                                                         \
-)(cond, mtx, time)
+)(((dlx_generic_lock_t *)entity)->ind.long_id, cond, mtx, time)
 
 #endif // __DYLINX_SYMBOL__
