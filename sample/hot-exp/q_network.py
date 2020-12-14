@@ -9,35 +9,41 @@ def solve_lock_overhead(delta, q_model, measured_resp):
     return compute_response_time(eq_cs, q_model.parallel_time, q_model.n_core) - measured_resp
 
 def compute_response_time(critical_time, parallel_time, n_core):
-    # s_func is the Laplace-Stieltjes Transform of
-    # dirac delta function.
-    def s_func(x):
-        return x * exp(-1 * x * critical_time)
+    mean_op = (parallel_time * critical_time / parallel_time)
+    z = mean_op / critical_time
+    exp_factor = 1. * min(1, n_core / (1 + z)) / critical_time
+    return n_core / exp_factor - mean_op
 
-    def b_series(n, alpha):
-        assert(n < n_core)
-        if n == 0:
-            return 1
-        else:
-            pi = np.float128(1.)
-            for i in range(1, n + 1):
-                pi = pi * (1 - s_func(i * alpha)) / s_func(i * alpha)
-            return pi
-
-    sigma = np.float128(0.)
-    alpha = 1. / parallel_time
-    for n in range(n_core):
-        sigma += comb(n_core - 1, n) * b_series(n, alpha)
-    p0 = 1. / (1 + n_core * critical_time  * sigma / parallel_time)
-    a = 1 - p0
-    exp_factor = a / critical_time
-    return n_core / exp_factor - parallel_time
+# def compute_response_time(critical_time, parallel_time, n_core):
+#     # s_func is the Laplace-Stieltjes Transform of
+#     # dirac delta function.
+#     def s_func(x):
+#         return x * exp(-1 * x * critical_time)
+#
+#     def b_series(n, alpha):
+#         assert(n < n_core)
+#         if n == 0:
+#             return 1
+#         else:
+#             pi = np.float128(1.)
+#             for i in range(1, n + 1):
+#                 pi = pi * (1 - s_func(i * alpha)) / s_func(i * alpha)
+#             return pi
+#
+#     sigma = np.float128(0.)
+#     alpha = 1. / parallel_time
+#     for n in range(n_core):
+#         sigma += comb(n_core - 1, n) * b_series(n, alpha)
+#     p0 = 1. / (1 + n_core * critical_time  * sigma / parallel_time)
+#     a = 1 - p0
+#     exp_factor = a / critical_time
+#     return n_core / exp_factor - parallel_time
 
 class MachineRepairGeneralQueue:
     # Response_time = waiting_time + repairing_time
-    def __init__(self, critical_time, ratio, n_core):
+    def __init__(self, critical_time, parallel_time, n_core):
         self.critical_time = critical_time
-        self.parallel_time = critical_time / ratio
+        self.parallel_time = parallel_time
         self.n_core = n_core
         self.alpha = 1. / self.parallel_time
     def lockless_response_time(self):

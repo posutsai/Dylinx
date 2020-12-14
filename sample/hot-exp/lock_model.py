@@ -13,7 +13,7 @@ import multiprocessing
 import math
 import matplotlib.pyplot as plt
 from scipy.optimize import newton
-from q_network import MachineRepairGeneralQueue, solve_lock_overhead
+from q_network import MachineRepairGeneralQueue, solve_lock_overhead, compute_response_time
 
 if f"{os.environ['DYLINX_HOME']}/python" not in sys.path:
     sys.path.append(f"{os.environ['DYLINX_HOME']}/python")
@@ -33,6 +33,14 @@ class TraceEntry:
         self.process = int(groups[3])
         self.kind = groups[4]
         self.tsc = int(groups[5])
+    def __str__(self):
+        return f"{self.function} ({self.kind}) cpu:{self.cpu}, thread:{self.thread}, tsc:{self.tsc}"
+
+class CodeSection:
+    def __init__(self, entry, exit):
+        self.entry = entry.tsc
+        self.exit = exit.tsc
+        self.duration = self.exit - self.entry
 
 class CriticalSection:
     def __init__(self, timestamps):
@@ -77,6 +85,23 @@ def group_cs(records):
             critical_sections.append(CriticalSection(ordered[i*4: i*4 + 4]))
     return critical_sections
 
+def check_arrival_dist(records):
+    threads = {r.thread for r in records}
+    logs = {t: [] for t in threads}
+    for r in records:
+        logs[r.thread].append(r)
+    parallel_ops = []
+    for t in logs.keys():
+        ordered = sorted(logs[t], key=lambda r: r.tsc)
+        # print(ordered[0])
+        # print(ordered[1])
+        # sys.exit()
+        assert(len(ordered) % 2 == 0)
+        for i in range(len(ordered) // 2):
+            parallel_ops.append(CodeSection(ordered[i * 2], ordered[i * 2 + 1]))
+    durations = [op.duration for op in parallel_ops]
+    return np.mean(durations) / np.std(durations), np.mean(durations), np.std(durations)
+
 class OverheadMeasurement:
     def __init__(self, ratios, n_cores, lock_types, repeat):
         self.ratios = ratios
@@ -84,22 +109,28 @@ class OverheadMeasurement:
         self.lock_types = lock_types
         self.repeat = repeat
         self.result = { l:{} for l in lock_types }
+        self.result["ideal"] = []
 
     def conduct(self):
         for ratio in self.ratios:
             for n_core in self.n_cores:
                 setting = (ratio, n_core)
                 with MachineRepairSubject("./compile_commands.json", ratio, n_core, 2000) as subject:
+                    subject.measure_theoretical_resp()
                     sites = subject.get_pluggable()
                     sorted_keys = sorted(sites.keys())
                     for lt in self.lock_types:
                         overheads = []
+                        waitings = []
                         id2type = { k: lt for i, k in enumerate(sorted_keys) }
                         subject.build_repo(lt, ratio, id2type, n_core)
                         for r in range(self.repeat):
-                            overheads.append(subject.execute_repo(lt))
-                        print(f"{lt} {setting} overhead: {np.mean(overheads)}")
-                        self.result[lt][setting] = np.mean(overheads)
+                            oh, w = subject.execute_repo(lt)
+                            overheads.append(oh)
+                            waitings.append(w)
+                        print(f"{lt} {setting} overhead: {np.mean(overheads)}, {np.std(overheads):.2f}")
+                        self.result[lt][setting] = {"overhead": (np.mean(overheads), np.std(overheads)), "waiting": np.mean(waitings)}
+                    self.result["ideal_waiting"] = subject.theoretical_resp
             self.plot_figure(ratio)
 
 
@@ -114,14 +145,29 @@ class OverheadMeasurement:
     # }
         fig, ax = plt.subplots()
         ax.set_title(f"Overhead of different locks under ratio {ratio}")
-        ax.set_ylim(-20000, 130000)
+        # ax.set_ylim(0, 40000)
         for lt in self.lock_types:
             overheads = []
+            stds = []
             for n_core in self.n_cores:
-                overheads.append(self.result[lt][(ratio, n_core)])
-            line = ax.plot(self.n_cores, overheads, label=f"{lt}")
+                overheads.append(self.result[lt][(ratio, n_core)]["overhead"][0])
+                stds.append(self.result[lt][(ratio, n_core)]["overhead"][1])
+            overheads = np.array(overheads)
+            stds = np.array(stds)
+            line = ax.plot(self.n_cores, overheads, label=f"{lt}", marker=".")
+            ax.fill_between(self.n_cores, overheads + stds, overheads - stds, alpha=0.3)
         ax.legend()
-        plt.savefig(f"figure/overheads_{ratio}.png")
+        plt.savefig(f"figure/overhead_{ratio}.png")
+
+        fig, ax = plt.subplots()
+        ax.set_title(f"Waiting time of different locks under ratio {ratio}")
+        for lt in self.lock_types:
+            waitings = []
+            for n_core in self.n_cores:
+                waitings.append(self.result[lt][(ratio, n_core)]["waiting"])
+            line = ax.plot(self.n_cores, waitings, label=f"{lt}")
+        ax.legend()
+        plt.savefig(f"figure/waiting_{ratio}.png")
 
     def generate_table(self):
         # 1. save to pickle file.
@@ -257,9 +303,9 @@ class MachineRepairSubject(BaseSubject):
         self.ideal_cs_ratio = cs_ratio
         self.n_core = n_core
         self.bin_size = bin_size
-        self.ideal_duration_avg, self.ideal_possess_avg = self.measure_ideal_cs(cs_ratio, n_core)
+        self.ideal_duration_avg, self.ideal_possess_avg, self.parallel_time = self.measure_ideal_cs(cs_ratio, n_core)
         print(f"mean duration = {self.ideal_duration_avg:10.2f}, possession = {self.ideal_possess_avg:10.2f}")
-        self.q_model = MachineRepairGeneralQueue(self.ideal_possess_avg, cs_ratio, n_core)
+        self.q_model = MachineRepairGeneralQueue(self.ideal_possess_avg, self.parallel_time, n_core)
         super().__init__(cc_path)
 
     def __enter__(self):
@@ -267,6 +313,9 @@ class MachineRepairSubject(BaseSubject):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.revert_repo()
+
+    def measure_theoretical_resp(self):
+        self.theoretical_resp = compute_response_time(self.ideal_possess_avg, self.parallel_time, self.n_core)
 
     def measure_ideal_cs(self, cs_ratio, n_core):
         with subprocess.Popen(
@@ -288,9 +337,11 @@ class MachineRepairSubject(BaseSubject):
             pattern = re.compile(r"- { type: 0, func-id: \d+, function: (.*), cpu: (\d*), thread: (\d*). process: (\d*), kind: function-(enter|exit), tsc: (\d*), data: '' }")
             entries = re.findall(pattern, xray_log)
             traces = list(map(lambda entry: TraceEntry(entry), entries))
-            traces = list(filter(lambda trace: "critical" in trace.function, traces))
-        critical_sections = group_cs(traces)
-        return np.mean([cs.duration for cs in critical_sections]), np.mean([cs.possession for cs in critical_sections])
+            critical_traces = list(filter(lambda trace: "critical" in trace.function, traces))
+            parallel_traces = list(filter(lambda trace: "parallel" in trace.function, traces))
+        critical_sections = group_cs(critical_traces)
+        _, parallel_time, _ = check_arrival_dist(parallel_traces)
+        return np.mean([cs.duration for cs in critical_sections]), np.mean([cs.possession for cs in critical_sections]), parallel_time
 
 
     def build_repo(self, ltype, cs_ratio, id2type, n_core):
@@ -326,13 +377,17 @@ class MachineRepairSubject(BaseSubject):
             pattern = re.compile(r"- { type: 0, func-id: \d+, function: (.*), cpu: (\d*), thread: (\d*). process: (\d*), kind: function-(enter|exit), tsc: (\d*), data: '' }")
             entries = re.findall(pattern, xray_log)
             traces = list(map(lambda entry: TraceEntry(entry), entries))
-            traces = list(filter(lambda trace: "critical" in trace.function, traces))
-        critical_sections = group_cs(traces)
+            critical_traces = list(filter(lambda trace: "critical" in trace.function, traces))
+            parallel_traces = list(filter(lambda trace: "parallel" in trace.function, traces))
+        critical_sections = group_cs(critical_traces)
+        exp_fit, parallel_mean, _ = check_arrival_dist(parallel_traces)
+        # print(f"exponential fitness = {exp_fit}")
         real_duration_avg = np.mean([cs.deviate - cs.attempt for cs in critical_sections])
         real_possession_avg = np.mean([cs.release - cs.acquire for cs in critical_sections])
+        print(f"actual ratio {real_possession_avg / parallel_mean:.2f}")
         print(f"real duration = {real_duration_avg:10.2f}, possession = {real_possession_avg:10.2f}")
         overhead = newton(solve_lock_overhead, 10000, args=[self.q_model, real_duration_avg])
-        return overhead
+        return overhead, np.mean([cs.acquire - cs.attempt for cs in critical_sections])
 
 
     def stop_repo(self):
@@ -346,14 +401,17 @@ def run(args):
             "no_parallel": {}
         }
         open("save/indicator.log", "w").close()
-        n_cores = list(range(2, multiprocessing.cpu_count(), 4))
-        n_cores.append(multiprocessing.cpu_count())
+        # n_cores = list(range(2, multiprocessing.cpu_count(), 32))
+        # n_cores.append(multiprocessing.cpu_count())
+        n_cores = [8, 16, 24, 32, 48, 64]
+        # n_cores = [8, 16]
         measurement = OverheadMeasurement(
-            [2 ** e for e in range(-4, 0)],
+            # [2 ** e for e in range(-3, 0)],
+            [0.25, 0.5, 0.75, 1],
             n_cores,
+            # ["TTAS"],
             ["PTHREADMTX", "TTAS", "BACKOFF"],
-            5
-            # ["PTHREADMTX"]
+            8
         )
         measurement.conduct()
 
