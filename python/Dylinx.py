@@ -10,8 +10,14 @@ import shutil
 import abc
 import ctypes
 import glob
+import re
+import ctypes
+from enum import Enum
+import matplotlib.pyplot as plt
+import numpy as np
 
-ALLOWED_LOCK_TYPE = ["PTHREADMTX", "ADAPTIVEMTX", "TTAS", "BACKOFF", "TICKET", "MCS"]
+# ALLOWED_LOCK_TYPE = ["PTHREADMTX", "ADAPTIVEMTX", "TTAS", "BACKOFF", "MCS"]
+ALLOWED_LOCK_TYPE = ["PTHREADMTX", "ADAPTIVEMTX", "TTAS", "BACKOFF"]
 
 def var_macro_handler(i, id2type, entities, content):
     ltype = id2type[i]
@@ -206,3 +212,136 @@ class BaseSubject(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def stop_repo(self):
         raise NotImplementedError
+
+class OpKind(Enum):
+    ENABLE = 1
+    DISABLE = 0
+
+class _HeadTrace:
+    def __init__(self, groups):
+        assert(groups[0] in ["enable", "disable"])
+        func, arg, cpu, tid, pid, self.kind, tsc = groups
+        self.affined_cpu = int(cpu)
+        self.tid = int(tid)
+        self.pid = int(pid)
+        self.tsc = int(tsc)
+        assert(self.kind == "enter-arg")
+        self.site_id, self.ins_id = self.parse_lock_id(int(arg))
+        self.op = {"enable": OpKind.ENABLE, "disable": OpKind.DISABLE}[func]
+
+    def parse_lock_id(self, long_id):
+        ins_id = ctypes.c_int((long_id & 0xFFFFFFFF00000000) >> 32).value
+        site_id = ctypes.c_int(long_id & 0x00000000FFFFFFFF).value
+        return site_id, ins_id
+
+class _TailTrace:
+    def __init__(self, groups):
+        assert(groups[0] in ["enable", "disable"])
+        func, _, cpu, tid, pid, self.kind, tsc = groups
+        self.affined_cpu = int(cpu)
+        self.tid = int(tid)
+        self.pid = int(pid)
+        self.tsc = int(tsc)
+        self.op = {"enable": OpKind.ENABLE, "disable": OpKind.DISABLE}[func]
+        assert(self.kind == "exit")
+
+class _LockOp:
+    def __init__(self, head_trace, tail_trace):
+        assert(isinstance(head_trace, _HeadTrace) == True)
+        assert(isinstance(tail_trace, _TailTrace) == True)
+        assert(head_trace.tid == tail_trace.tid)
+        assert(head_trace.pid == tail_trace.pid)
+        self.op = head_trace.op
+        self.affined_cpu = head_trace.affined_cpu
+        self.tid = head_trace.tid
+        self.pid = head_trace.pid
+        self.enter_tsc = head_trace.tsc
+        self.exit_tsc = tail_trace.tsc
+        self.site_id = head_trace.site_id
+        self.ins_id = head_trace.ins_id
+        self.duration = self.exit_tsc - self.enter_tsc
+
+class DylinxLockCycle:
+    def __init__(self, enable, disable):
+        assert(enable.site_id == disable.site_id)
+        assert(enable.ins_id == disable.ins_id)
+        self.site_id = enable.site_id
+        self.ins_id = enable.ins_id
+        self.affined_cpu = enable.affined_cpu
+        self.tid = enable.tid
+        self.pid = enable.pid
+        self.rel_wait = enable.exit_tsc - enable.enter_tsc
+        self.abs_wait = (enable.enter_tsc, enable.exit_tsc)
+        self.rel_hold = disable.enter_tsc - enable.exit_tsc
+        self.abs_hold = (enable.exit_tsc, disable.enter_tsc)
+        self.rel_life = disable.enter_tsc - enable.enter_tsc
+        self.abs_life = (enable.enter_tsc, disable.enter_tsc)
+        self.attempt = enable.enter_tsc
+        self.acquire = enable.exit_tsc
+        self.release = disable.enter_tsc
+
+    def serialize(self):
+        pass
+
+class DylinxRuntimeReport:
+    def __init__(self, xray_path):
+        pattern = re.compile(r"- { type: 0, func-id: \d+, function: dlx_forward_(enable|disable),(?: args: \[ (\d+) \],)? cpu: (\d*), thread: (\d*). process: (\d*), kind: function-(enter\-arg|exit), tsc: (\d*), data: '' }")
+        with open(xray_path) as xray_file:
+            xray_log = xray_file.read()
+            entries = re.findall(pattern, xray_log)
+            traces = list(map(lambda groups: _TailTrace(groups) if groups[1] == "" else _HeadTrace(groups), entries))
+        pid = {t.pid for t in traces}
+        assert(len(pid) == 1) # xray log should contain only single main thread.
+        main_tid = list(pid)[0]
+        threads = {t.tid for t in traces}
+        self.cycles = []
+        for tid in threads:
+            traces_by_tid = list(filter(lambda trace: trace.tid == tid, traces))
+            self.cycles = self.cycles + self.pair_thread_traces(traces_by_tid)
+        print("cycle processing complete")
+
+        self.site2ins = {}
+        for trace in filter(lambda t: isinstance(t, _HeadTrace), traces):
+            site_id = trace.site_id
+            ins_id = trace.ins_id
+            if site_id not in self.site2ins.keys():
+                self.site2ins[site_id] = {ins_id}
+            else:
+                self.site2ins[site_id].add(ins_id)
+        print(self.site2ins)
+
+
+    def pair_thread_traces(self, traces):
+        sorted_traces = sorted(traces, key=lambda t: t.tsc)
+        assert(len(traces) % 2 == 0)
+        cycles = []
+        stack = []
+        for i_pair in range(len(sorted_traces) // 2):
+            curr_call = _LockOp(sorted_traces[i_pair * 2], sorted_traces[i_pair * 2 + 1])
+            if curr_call.op == OpKind.ENABLE:
+                stack.append(curr_call)
+            if curr_call.op == OpKind.DISABLE:
+                prev_call = stack.pop()
+                if prev_call.op != OpKind.ENABLE or (curr_call.site_id, curr_call.ins_id) != (prev_call.site_id, prev_call.ins_id):
+                    raise ValueError(f"[ ERROR ] Disable and enable op pair aren't matched")
+                cycles.append(DylinxLockCycle(prev_call, curr_call))
+        return cycles
+
+    # Should we plot from main function
+    def plot_lifetime_superposition_graph(self, fig_path):
+        fig, axes = plt.subplots(len(self.site2ins.keys()), 1, sharex=True)
+        fig.tight_layout(pad=3.0)
+        # Current version starts from the first lock related op.
+        s_tick = min(self.cycles, key=lambda c: c.attempt).attempt
+        e_tick = max(self.cycles, key=lambda c: c.release).release
+        timeline_len = e_tick - s_tick + 1
+        x = np.arange(timeline_len)
+        for i, site in enumerate(self.site2ins.keys()):
+            y = np.zeros(timeline_len)
+            involve_cycles = filter(lambda c: c.site_id == site, self.cycles)
+            for cycle in involve_cycles:
+                y[cycle.attempt - s_tick: cycle.release - s_tick] += 1
+            axes[i].set_title(f"lifetime superposition for site {site}")
+            axes[i].plot(x, y)
+        plt.savefig(fig_path)
+
