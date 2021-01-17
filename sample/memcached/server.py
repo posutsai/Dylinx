@@ -20,7 +20,7 @@ class DylinxSubject(BaseSubject):
     def build_repo(self, id2type):
         super().configure_type(id2type)
         cmd = f"cd repo; make -f dylinx.mk memcached-dlx"
-        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, shell=True)
+        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL, shell=True)
         err_msg = proc.stderr.read().decode("utf-8")
         if len(err_msg) != 0:
             print(err_msg)
@@ -32,7 +32,7 @@ class DylinxSubject(BaseSubject):
         ])
         self.task = subprocess.Popen(
             [f"{self.repo}/memcached-dlx", "-c", "100000", "-l", "0.0.0.0", "-t", "64"],
-            bufsize=0
+            stdout=subprocess.DEVNULL
         )
         time.sleep(3)
 
