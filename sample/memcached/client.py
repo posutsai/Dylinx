@@ -11,6 +11,7 @@ import json
 import re
 import pickle
 import numpy as np
+import matplotlib.pyplot as plt
 
 if f"{os.environ['DYLINX_HOME']}/python" not in sys.path:
     sys.path.append(f"{os.environ['DYLINX_HOME']}/python")
