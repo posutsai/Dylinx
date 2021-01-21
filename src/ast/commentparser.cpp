@@ -133,7 +133,7 @@ void traverse_init_fields_with_offset(
       );
     }
     else if (type_name == "pthread_mutex_t") {
-      SourceLocation begin_loc = iter->getBeginLoc();
+      SourceLocation begin_loc = sm.getFileLoc(iter->getBeginLoc());
       const FileEntry *fentry = sm.getFileEntryForID(sm.getFileID(begin_loc));
       init_params.push_back(
         std::make_tuple(
