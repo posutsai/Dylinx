@@ -9,7 +9,10 @@ DYLINX_FLAG=-ldl -latomic
 endif
 
 queue: pipe.c main.c
-	$(CC) $^ -o bin/$@ $(INCLUDE_FLAG) $(LD_FLAG) $(DYLINX_FLAG) -fxray-instrument
+ifndef n_thread
+	$(error n_thread is a required argument!!!)
+endif
+	$(CC) $^ -DN_THREAD=$(n_thread) -o bin/$@ $(INCLUDE_FLAG) $(LD_FLAG) $(DYLINX_FLAG) -fxray-instrument
 
 clean:
 	/bin/rm -rf bin/*
