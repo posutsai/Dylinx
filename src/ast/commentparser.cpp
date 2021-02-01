@@ -42,6 +42,7 @@
 #define EXTERN_ARR_SYMBOL "EXTERN_ARR_SYMBOL"
 #define VAR_FIELD_INIT "VAR_FIELD_INIT"
 #define FIELD_INSERT "FIELD_INSERT"
+#define FIELD_ARRAY "FIELD_ARRAY"
 #define TYPEDEF_ALLOCA_TYPE "TYPEDEF"
 #define MUTEX_MEM_ALLOCATION "MUTEX_MEM_ALLOCATION"
 #define STRUCT_MEM_ALLOCATION "STRUCT_MEM_ALLOCATION"
@@ -80,7 +81,7 @@ public:
   Rewriter *rw_ptr;
   std::set<EntityID> metas;
   std::set<FileID> cu_deps;
-  std::set<FileID> decorated_headers;
+  std::set<uint32_t> decorated_headers;
   std::map<std::string, std::tuple<std::string, uint32_t, uint32_t>> cu_arrs;
   std::map<std::string, std::tuple<uint32_t, uint32_t>> cu_gvars;
   std::map<
@@ -113,7 +114,7 @@ const Token *move2n_token(SourceLocation loc, uint32_t n, SourceManager& sm, con
 
 void traverse_init_fields_with_offset(
   const RecordDecl *recr,
-  std::vector<std::tuple<uint64_t, std::string, uint32_t, uint32_t>>& init_params,
+  std::vector<std::tuple<uint64_t, uint32_t, std::string, uint32_t, uint32_t>>& init_params,
   uint64_t cur_offset,
   ASTContext& ctx)
 {
@@ -121,9 +122,12 @@ void traverse_init_fields_with_offset(
 	return;
   const ASTRecordLayout& layout = ctx.getASTRecordLayout(recr);
   SourceManager& sm = ctx.getSourceManager();
+  std::regex array_ptn("pthread_mutex_t \\[(.+)\\]");
+  std::smatch match_result;
   for (auto iter = recr->field_begin(); iter != recr->field_end(); iter++) {
     const clang::Type *t = iter->getType().getTypePtr();
     std::string type_name = t->getCanonicalTypeInternal().getAsString();
+    std::regex_match(type_name, match_result, array_ptn);
     if (t->isStructureType() && type_name != "pthread_mutex_t") {
       traverse_init_fields_with_offset(
         t->getAsStructureType()->getDecl(),
@@ -138,6 +142,20 @@ void traverse_init_fields_with_offset(
       init_params.push_back(
         std::make_tuple(
           cur_offset + layout.getFieldOffset(iter->getFieldIndex()),
+          1,
+          iter->getNameAsString(),
+          fentry->getUID(),
+          sm.getSpellingLineNumber(begin_loc)
+        )
+      );
+    } else if (match_result.size() > 1) {
+      SourceLocation begin_loc = sm.getFileLoc(iter->getBeginLoc());
+      const FileEntry *fentry = sm.getFileEntryForID(sm.getFileID(begin_loc));
+
+      init_params.push_back(
+        std::make_tuple(
+          cur_offset + layout.getFieldOffset(iter->getFieldIndex()),
+          std::stoi(match_result.str(1)),
           iter->getNameAsString(),
           fentry->getUID(),
           sm.getSpellingLineNumber(begin_loc)
@@ -147,6 +165,7 @@ void traverse_init_fields_with_offset(
       continue;
     }
   }
+  printf("end layer traverse\n");
 }
 
 void traverse_init_fields_with_name(
@@ -187,17 +206,25 @@ void traverse_init_fields_with_name(
 void write_modified_file(fs::path file_path, FileID fid, SourceManager& sm) {
   std::error_code err;
   fs::path temp_file = Dylinx::Instance().temp_dir / file_path.filename();
+  uint32_t uid = sm.getFileEntryForID(fid)->getUID();
+
   if (!fs::exists(temp_file)) {
     raw_fd_ostream fstream(temp_file.string(), err);
     Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
+    if (uid == sm.getFileEntryForID(Dylinx::Instance().pthread_header)->getUID()) {
+      printf("should insert element\n");
+      Dylinx::Instance().decorated_headers.insert(uid);
+    }
+    printf("successfully write for no existence \n");
   }
   else if (
-      fid == Dylinx::Instance().pthread_header &&
-      Dylinx::Instance().decorated_headers.find(fid) == Dylinx::Instance().decorated_headers.end()) {
-    Dylinx::Instance().decorated_headers.insert(fid);
+      uid == sm.getFileEntryForID(Dylinx::Instance().pthread_header)->getUID() &&
+      Dylinx::Instance().decorated_headers.find(uid) == Dylinx::Instance().decorated_headers.end()) {
+    Dylinx::Instance().decorated_headers.insert(uid);
     assert(fs::remove(temp_file));
     raw_fd_ostream fstream(temp_file.string(), err);
     Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
+    printf("successfully write for header\n");
   }
 }
 
@@ -206,7 +233,8 @@ bool save2metas(EntityID uid, YAML::Node meta, FileID fid, SourceManager& sm) {
   std::string file_name = std::get<0>(uid).string();
   bool is_new = Dylinx::Instance().metas.insert(uid).second;
   bool should_decorate = Dylinx::Instance().pthread_header == fid;
-  bool is_decorated = Dylinx::Instance().decorated_headers.find(fid) != Dylinx::Instance().decorated_headers.end();
+  uint32_t fuid = sm.getFileEntryForID(fid)->getUID();
+  bool is_decorated = Dylinx::Instance().decorated_headers.find(fuid) != Dylinx::Instance().decorated_headers.end();
   if (is_new || (should_decorate && !is_decorated)) {
     if (!is_new) {
       YAML::Node entities = Dylinx::Instance().lock_decl["LockEntity"];
@@ -340,7 +368,7 @@ public:
     }
 
     if (const UnaryExprOrTypeTraitExpr *sizeof_expr = result.Nodes.getNodeAs<UnaryExprOrTypeTraitExpr>("sizeofExpr")) {
-      std::vector<std::tuple<uint64_t, std::string, uint32_t, uint32_t>> init_params;
+      std::vector<std::tuple<uint64_t, uint32_t, std::string, uint32_t, uint32_t>> init_params;
       if (arg_type.getAsString() == "pthread_mutex_t") {
 #ifdef __DYLINX_DEBUG__
       DEBUG_LOG(MallocMutex, vd, sm);
@@ -373,13 +401,13 @@ public:
         // Deal with compound literal (3rd argument)
         std::string comp_liter = "((uint32_t []) {";
         for (auto it = init_params.begin(); it != init_params.end(); it++) {
-          char format[50];
-          sprintf(format, " %lu%s", std::get<0>(*it) / 8, it == init_params.end() - 1? " ": ",");
+          char format[100];
+          sprintf(format, " %lu, %u%s", std::get<0>(*it) / 8, std::get<1>(*it), it == init_params.end() - 1? " ": ",");
           comp_liter = comp_liter + std::string(format);
           YAML::Node member_info;
-          member_info["field_name"] = std::get<1>(*it);
-          member_info["fentry_uid"] = std::get<2>(*it);
-          member_info["line"] = std::get<3>(*it);
+          member_info["field_name"] = std::get<2>(*it);
+          member_info["fentry_uid"] = std::get<3>(*it);
+          member_info["line"] = std::get<4>(*it);
           meta["member_info"].push_back(member_info);
         }
         comp_liter = comp_liter + std::string("})");
@@ -621,17 +649,31 @@ public:
           sm.getImmediateExpansionRange(type_start).getAsRange(),
           format
         );
+        decl_loc["modification_type"] = FIELD_INSERT;
       }
       else {
-        Dylinx::Instance().rw_ptr->ReplaceText(
-          SourceRange(type_start, fd->getTypeSpecEndLoc()),
-          format
-        );
+        if (fd->getType()->isArrayType()) {
+          std::smatch sm;
+          std::regex ptn("pthread_mutex_t \\[(.+)\\]");
+          std::string type_str = fd->getType().getAsString();
+          std::regex_match(type_str, sm, ptn);
+          Dylinx::Instance().rw_ptr->ReplaceText(
+            type_start, 15, format
+          );
+          printf("matched size is %d %s\n", sm.size(), sm.str(1).c_str());
+          decl_loc["modification_type"] = FIELD_ARRAY;
+          decl_loc["size"] = sm.str(1).c_str();
+        } else {
+          decl_loc["modification_type"] = FIELD_INSERT;
+          Dylinx::Instance().rw_ptr->ReplaceText(
+            SourceRange(type_start, fd->getTypeSpecEndLoc()),
+            format
+          );
+        }
       }
       if (RawComment *comment = result.Context->getRawCommentForDeclNoCache(fd)) {
         decl_loc["lock_combination"] = parse_comment(comment->getBriefText(*result.Context));
       }
-      decl_loc["modification_type"] = FIELD_INSERT;
       decl_loc["fentry_uid"] = fentry->getUID();
       save2metas(uid, decl_loc, src_id, sm);
       save2altered_list(src_id, sm);
@@ -840,10 +882,12 @@ public:
             format
           );
         }
+        printf("modify source code to %s\n", format);
         stash_id = Dylinx::Instance().lock_i;
       }
       std::string var_name = d->getNameAsString();
       if (!d->hasDefinition() || d->hasExternalStorage()) {
+        printf("detect extern symbol %s\n", var_name.c_str());
         meta["modification_type"] = EXTERN_VAR_SYMBOL;
         meta["name"] = var_name;
         save2metas(cur_type, meta, src_id, sm);
@@ -873,8 +917,11 @@ public:
 
       // Dealing with initialization
       if (!d->isStaticLocal() && d->hasGlobalStorage()) {
-        if (cur_type != pre_type)
+        if (cur_type != pre_type) {
           meta["extra_init"] = true;
+          printf("activate extra init\n1");
+        }
+        printf("in if\n");
       } else {
         // User doesn't specify initlist.
         char format[50];
@@ -891,7 +938,7 @@ public:
         );
         meta["define_init"] = true;
       }
-
+      printf("matched var is %s\n", var_name.c_str());
       meta["name"] = var_name;
       meta["fentry_uid"] = sm.getFileEntryForID(src_id)->getUID();
       save2metas(cur_type, meta, src_id, sm);
@@ -1134,7 +1181,8 @@ public:
     matcher.addMatcher(
       fieldDecl(eachOf(
         hasType(asString("pthread_mutex_t")),
-        hasType(asString("pthread_mutex_t *"))
+        hasType(asString("pthread_mutex_t *")),
+        hasType(arrayType(hasElementType(asString("pthread_mutex_t"))))
       )).bind("struct_members"),
       &handler_for_struct
     );
@@ -1312,6 +1360,7 @@ public:
         }
       }
       global_initializer.append("}\n");
+      printf("global_initializer is\n%s\n", global_initializer.c_str());
       Dylinx::Instance().rw_ptr->InsertText(
         end,
         global_initializer
@@ -1321,6 +1370,7 @@ public:
     std::set<FileID>::iterator iter;
     for (iter = Dylinx::Instance().cu_deps.begin(); iter != Dylinx::Instance().cu_deps.end(); iter++) {
       std::string filename = sm.getFileEntryForID(*iter)->tryGetRealPathName().str();
+      printf("try to write to %s\n", filename.c_str());
       write_modified_file(filename, *iter, sm);
       Dylinx::Instance().altered_files.insert(filename);
     }
