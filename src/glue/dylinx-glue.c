@@ -95,15 +95,23 @@ void *dlx_error_obj_init(uint32_t cnt, uint32_t unit, uint32_t *offsets, uint32_
   return NULL;
 }
 
-void *dlx_struct_obj_init(uint32_t cnt, uint32_t unit, uint32_t *offsets, uint32_t n_offset, void **init_funcs, int *type_ids, char *file, int line) {
+// The third argument property represent two meanings.
+// 1. offset collection (even index)
+// 2. occupied volume unit (odd index) normal variable = 1; array = length
+void *dlx_struct_obj_init(uint32_t cnt, uint32_t unit, uint32_t *properties, uint32_t n_offset, void **init_funcs, int *type_ids, char *file, int line) {
   char *object = calloc(cnt, unit);
   if (object) {
     for (uint32_t c = 0; c < cnt; c++) {
       for (uint32_t n = 0; n < n_offset; n++) {
-        dlx_generic_lock_t *lock = object + c * unit + offsets[n];
+        uint64_t offset = properties[2*n];
+        uint32_t vol = properties[2*n + 1];
+        dlx_generic_lock_t *lock = object + c * unit + offset;
         int (*init_fptr)(dlx_generic_lock_t *, pthread_mutexattr_t *, int32_t, char *, char *, int);
         init_fptr = init_funcs[n];
-        init_fptr(lock, NULL, type_ids[n], "forward_from_obj_init", file, line);
+        for (int i = 0; i < vol; i++) {
+            init_fptr(lock, NULL, type_ids[n], "forward_from_obj_init", file, line);
+            lock++;
+        }
       }
     }
     return object;
@@ -146,7 +154,10 @@ int dlx_untrack_var_init(dlx_generic_lock_t *lock, const pthread_mutexattr_t *at
   return (!lock->methods || lock->methods->init_fptr(&lock->lock_obj, NULL))? -1: 0;
 }
 
-int dlx_error_check_init(void *lock, const pthread_mutexattr_t *attr, char *var_name, char *file, int line) {
+int dlx_error_check_init(void *object, const pthread_mutexattr_t *attr, char *var_name, char *file, int line) {
+  dlx_generic_lock_t *lock = (dlx_generic_lock_t *)object;
+  if (lock && lock->check_code == 0x32CB00B5)
+    return 0;
   char error_msg[1000];
   sprintf(
     error_msg,
@@ -215,12 +226,20 @@ int dlx_untrack_arr_init(dlx_generic_lock_t *lock, uint32_t num, int type_id, ch
   return 0;
 }
 
-int dlx_error_enable(int64_t long_id, void *lock, char *var_name, char *file, int line) {
-// XRAY_ATTR int dlx_error_enable(void *lock, char *var_name, char *file, int line) {
-  HANDLING_ERROR(
+int dlx_error_enable(int64_t long_id, void *object, char *var_name, char *file, int line) {
+  dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)object;
+  if (mtx && mtx->check_code == 0x32CB00B5)
+      return mtx->methods->lock_fptr(mtx->lock_obj);
+  char err_msg[200];
+  indicator_t id = (indicator_t)long_id;
+  sprintf(
+    err_msg,
     "Untrackable lock is trying to enable. Possible cause is\n"
     "_Generic function falls into \'default\' option.\n"
+    "(Lock-id: %d-%u) %s:%d",
+    id.pair.type_id, id.pair.ins_id, file, line
   );
+  HANDLING_ERROR(err_msg);
   return -1;
 }
 
@@ -235,7 +254,10 @@ int dlx_forward_enable(int64_t long_id, void *lock, char *var_name, char *file, 
   return mtx->methods->lock_fptr(mtx->lock_obj);
 }
 
-int dlx_error_disable(int64_t long_id, void *lock, char *var_name, char *file, int line) {
+int dlx_error_disable(int64_t long_id, void *object, char *var_name, char *file, int line) {
+  dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)object;
+  if (mtx && mtx->check_code == 0x32CB00B5)
+    return mtx->methods->unlock_fptr(mtx->lock_obj);
   HANDLING_ERROR(
     "Untrackable lock is trying to unlock. Possible cause is\n"
     "_Generic function falls into \'default\' option.\n"
@@ -252,7 +274,10 @@ int dlx_forward_disable(int64_t long_id, void *lock, char *var_name, char *file,
   return mtx->methods->unlock_fptr(mtx->lock_obj);
 }
 
-int dlx_error_destroy(int64_t long_id, void *lock) {
+int dlx_error_destroy(int64_t long_id, void *object) {
+  dlx_generic_lock_t *mtx = (dlx_generic_lock_t *)object;
+  if (mtx && mtx->check_code == 0x32CB00B5)
+    return mtx->methods->destroy_fptr(mtx->lock_obj);
   HANDLING_ERROR(
     "Untrackable lock is trying to destroy. Possible cause is\n"
     "_Generic function falls into \'default\' option.\n"

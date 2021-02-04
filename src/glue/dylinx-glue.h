@@ -197,11 +197,11 @@ extern uint32_t g_ins_id;
 
 #define DLX_GENERIC_OBJ_INIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_ ## ltype ## _obj_init,
 #define DLX_GENERIC_OBJ_INIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_OBJ_INIT_TYPE_REDIRECT, __VA_ARGS__)
-#define __dylinx_object_init_(cnt, unit, offsets, n_offset, ltype, init_funcs, type_ids) _Generic((ltype),     \
+#define __dylinx_object_init_(cnt, unit, properties, n_offset, ltype, init_funcs, type_ids) _Generic((ltype),     \
   DLX_GENERIC_OBJ_INIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                            \
   user_def_struct_t *: dlx_struct_obj_init,                                                                    \
   default: dlx_error_obj_init                                                                                  \
-)(cnt, unit, offsets, n_offset, init_funcs, type_ids,  __FILE__, __LINE__)
+)(cnt, unit, properties, n_offset, init_funcs, type_ids,  __FILE__, __LINE__)
 
 #define DLX_GENERIC_ARR_INIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_ ## ltype ## _arr_init,
 #define DLX_GENERIC_ARR_INIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_ARR_INIT_TYPE_REDIRECT, __VA_ARGS__)
@@ -249,7 +249,7 @@ extern uint32_t g_ins_id;
   DLX_GENERIC_COND_WAIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                         \
   dlx_generic_lock_t *: dlx_forward_cond_wait,                                                               \
   default: dlx_error_cond_wait                                                                               \
-)(((dlx_generic_lock_t *)entity)->ind.long_id, cond, mtx)
+)(((dlx_generic_lock_t *)mtx)->ind.long_id, cond, mtx)
 
 #define DLX_GENERIC_COND_TIMEDWAIT_TYPE_REDIRECT(ltype) dlx_ ## ltype ## _t *: dlx_forward_cond_timedwait,
 #define DLX_GENERIC_COND_TIMEDWAIT_TYPE_LIST(...) FOR_EACH(DLX_GENERIC_COND_TIMEDWAIT_TYPE_REDIRECT, __VA_ARGS__)
@@ -257,6 +257,6 @@ extern uint32_t g_ins_id;
   DLX_GENERIC_COND_TIMEDWAIT_TYPE_LIST(ALLOWED_LOCK_TYPE)                                                   \
   dlx_generic_lock_t *: dlx_forward_cond_timedwait,                                                         \
   default: dlx_error_cond_timedwait                                                                         \
-)(((dlx_generic_lock_t *)entity)->ind.long_id, cond, mtx, time)
+)(((dlx_generic_lock_t *)mtx)->ind.long_id, cond, mtx, time)
 
 #endif // __DYLINX_SYMBOL__

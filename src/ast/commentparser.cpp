@@ -165,7 +165,6 @@ void traverse_init_fields_with_offset(
       continue;
     }
   }
-  printf("end layer traverse\n");
 }
 
 void traverse_init_fields_with_name(
@@ -212,10 +211,8 @@ void write_modified_file(fs::path file_path, FileID fid, SourceManager& sm) {
     raw_fd_ostream fstream(temp_file.string(), err);
     Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
     if (uid == sm.getFileEntryForID(Dylinx::Instance().pthread_header)->getUID()) {
-      printf("should insert element\n");
       Dylinx::Instance().decorated_headers.insert(uid);
     }
-    printf("successfully write for no existence \n");
   }
   else if (
       uid == sm.getFileEntryForID(Dylinx::Instance().pthread_header)->getUID() &&
@@ -224,7 +221,6 @@ void write_modified_file(fs::path file_path, FileID fid, SourceManager& sm) {
     assert(fs::remove(temp_file));
     raw_fd_ostream fstream(temp_file.string(), err);
     Dylinx::Instance().rw_ptr->getEditBuffer(fid).write(fstream);
-    printf("successfully write for header\n");
   }
 }
 
@@ -882,12 +878,10 @@ public:
             format
           );
         }
-        printf("modify source code to %s\n", format);
         stash_id = Dylinx::Instance().lock_i;
       }
       std::string var_name = d->getNameAsString();
       if (!d->hasDefinition() || d->hasExternalStorage()) {
-        printf("detect extern symbol %s\n", var_name.c_str());
         meta["modification_type"] = EXTERN_VAR_SYMBOL;
         meta["name"] = var_name;
         save2metas(cur_type, meta, src_id, sm);
@@ -919,9 +913,7 @@ public:
       if (!d->isStaticLocal() && d->hasGlobalStorage()) {
         if (cur_type != pre_type) {
           meta["extra_init"] = true;
-          printf("activate extra init\n1");
         }
-        printf("in if\n");
       } else {
         // User doesn't specify initlist.
         char format[50];
@@ -938,7 +930,6 @@ public:
         );
         meta["define_init"] = true;
       }
-      printf("matched var is %s\n", var_name.c_str());
       meta["name"] = var_name;
       meta["fentry_uid"] = sm.getFileEntryForID(src_id)->getUID();
       save2metas(cur_type, meta, src_id, sm);
@@ -1182,6 +1173,11 @@ public:
       fieldDecl(eachOf(
         hasType(asString("pthread_mutex_t")),
         hasType(asString("pthread_mutex_t *")),
+        hasType(hasUnqualifiedDesugaredType(recordType(
+          hasDeclaration(recordDecl(
+            has(fieldDecl(hasType(asString("struct __pthread_mutex_s"))))
+          ))
+        ))),
         hasType(arrayType(hasElementType(asString("pthread_mutex_t"))))
       )).bind("struct_members"),
       &handler_for_struct
@@ -1360,7 +1356,6 @@ public:
         }
       }
       global_initializer.append("}\n");
-      printf("global_initializer is\n%s\n", global_initializer.c_str());
       Dylinx::Instance().rw_ptr->InsertText(
         end,
         global_initializer
@@ -1370,7 +1365,6 @@ public:
     std::set<FileID>::iterator iter;
     for (iter = Dylinx::Instance().cu_deps.begin(); iter != Dylinx::Instance().cu_deps.end(); iter++) {
       std::string filename = sm.getFileEntryForID(*iter)->tryGetRealPathName().str();
-      printf("try to write to %s\n", filename.c_str());
       write_modified_file(filename, *iter, sm);
       Dylinx::Instance().altered_files.insert(filename);
     }

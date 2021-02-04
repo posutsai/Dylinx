@@ -27,12 +27,7 @@ int mcs_init(void **entity, pthread_mutexattr_t *attr) {
 
 int __mcs_lock(mcs_lock_t *mtx) {
   mcs_node_t *node = (mcs_lock_t *)alloc_cache_align(sizeof(mcs_node_t));
-  printf("mtx addr is %p\n", mtx);
-  printf("locking node is %p\n", node);
-  if (pthread_setspecific(mtx->key, node)) {
-    printf("error msg: %s\n", strerror(errno));
-    exit(0);
-  }
+  pthread_setspecific(mtx->key, node);
   node->next = NULL;
   node->spin = LOCKED;
   mcs_node_t *tail = xchg_64((void *)&mtx->tail, (void *)node);
@@ -42,7 +37,6 @@ int __mcs_lock(mcs_lock_t *mtx) {
   COMPILER_BARRIER();
   while (node->spin == LOCKED)
     CPU_PAUSE();
-  printf("[tid = %ld] running head is %p\n", syscall(__NR_gettid), node);
   return 0;
 }
 
@@ -70,9 +64,7 @@ int mcs_trylock(void *entity) {
 }
 
 int __mcs_unlock(mcs_lock_t *mtx) {
-  printf("mtx addr is %p\n", mtx);
   mcs_node_t *node = (mcs_node_t *)pthread_getspecific(mtx->key);
-  printf("unlocking node is %p\n", node);
   mcs_node_t *empty = NULL;
   if (!node->next) {
     if (__atomic_compare_exchange(&mtx->tail, &node, &empty, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
@@ -81,7 +73,6 @@ int __mcs_unlock(mcs_lock_t *mtx) {
       CPU_PAUSE();
   }
   node->next->spin = UNLOCKED;
-  printf("[tid = %ld] perform unlock spinning node addr is %p\n", syscall(__NR_gettid), node);
   return 0;
 }
 

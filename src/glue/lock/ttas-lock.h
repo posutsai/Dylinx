@@ -83,7 +83,7 @@ int __ttas_unlock(void *entity) {
 #ifdef __DYLINX_DEBUG__
   printf("ttas-lock is disabled !!!\n");
 #endif
-  return 1;
+  return 0;
 }
 
 int ttas_unlock(void *entity) {
