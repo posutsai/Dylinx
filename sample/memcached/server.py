@@ -7,6 +7,7 @@ import asyncio
 from aiohttp import web
 import signal
 import time
+import socket
 
 if f"{os.environ['DYLINX_HOME']}/python" not in sys.path:
     sys.path.append(f"{os.environ['DYLINX_HOME']}/python")
@@ -44,7 +45,8 @@ async def init_subject(request):
     subject = DylinxSubject("./repo/compiler_commands.json")
     return web.json_response({
         "err": 0,
-        "sites": subject.get_pluggable()
+        "sites": subject.get_pluggable(),
+        "hostname": socket.gethostname(),
     })
 
 async def set_subject(request):
