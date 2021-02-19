@@ -48,7 +48,7 @@ def mtx_alloc_handler(i, id2type, entities, content):
 
 def locate_field_decl(name, f_uid, line, entities):
     for i, e in entities.items():
-        if e["modification_type"] == "FIELD_INSERT" and e["field_name"] == name and e["fentry_uid"] == f_uid and e["line"] == line:
+        if (e["modification_type"] == "FIELD_INSERT" or e["modification_type"] == "FIELD_ARRAY") and e["field_name"] == name and e["fentry_uid"] == f_uid and e["line"] == line:
             return e
 
 def field_decl_handler(i, id2type, entities, content):
@@ -105,11 +105,11 @@ class BaseSubject(metaclass=abc.ABCMeta):
         with subprocess.Popen(args=['clang', '-dumpversion'], stdout=subprocess.PIPE, universal_newlines=True) as proc:
             clang_ver = proc.stdout.read().replace('\n', '')
         os.environ["C_INCLUDE_PATH"] = ":".join([f"{self.home_path}/src/glue", f"/usr/local/lib/clang/{clang_ver}/include", f"{self.glue_dir}/glue"])
-
         self.init_mapping = {
             "VARIABLE": var_macro_handler,
             "ARRAY": arr_macro_handler,
             "FIELD_INSERT": field_decl_handler,
+            "FIELD_ARRAY": field_decl_handler,
             "MUTEX_MEM_ALLOCATION": mtx_alloc_handler,
             "EXTERN_VAR_SYMBOL": extern_symbol_handler,
             "EXTERN_ARR_SYMBOL": extern_symbol_handler,
@@ -157,15 +157,19 @@ class BaseSubject(metaclass=abc.ABCMeta):
             return \
                 e["modification_type"] != "EXTERN_VAR_SYMBOL" and \
                 e["modification_type"] != "EXTERN_ARR_SYMBOL" and \
+                e["modification_type"] != "VAR_FIELD_INIT" and \
                 e["modification_type"] != "STRUCT_MEM_ALLOCATION"
 
         validity = list(filter(valid, entities))
         return validity
 
     def inject_symbol(self):
-        with subprocess.Popen(args=[self.executable, self.cc_path, f"{self.out_dir}/dylinx-insertion.yaml"], stdout=subprocess.PIPE) as proc:
+        cmd = f"{self.executable} {self.cc_path} {self.out_dir}/dylinx-insertion.yaml"
+        with subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, shell=True) as proc:
             out = proc.stdout.read().decode("utf-8")
+            err = proc.stderr.read().decode("utf-8")
             logging.debug(out)
+            logging.debug(err)
 
     def get_pluggable(self):
         return self.pluggable_sites
