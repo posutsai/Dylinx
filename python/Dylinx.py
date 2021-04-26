@@ -14,7 +14,9 @@ import re
 import ctypes
 from enum import Enum
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 import numpy as np
+import pickle
 
 # ALLOWED_LOCK_TYPE = ["PTHREADMTX", "ADAPTIVEMTX", "TTAS", "BACKOFF", "MCS"]
 ALLOWED_LOCK_TYPE = ["PTHREADMTX", "ADAPTIVEMTX", "TTAS", "BACKOFF"]
@@ -237,6 +239,8 @@ class _HeadTrace:
         ins_id = ctypes.c_int((long_id & 0xFFFFFFFF00000000) >> 32).value
         site_id = ctypes.c_int(long_id & 0x00000000FFFFFFFF).value
         return site_id, ins_id
+    def __str__(self):
+        return f"HeadTrace {self.tsc}"
 
 class _TailTrace:
     def __init__(self, groups):
@@ -248,6 +252,8 @@ class _TailTrace:
         self.tsc = int(tsc)
         self.op = {"enable": OpKind.ENABLE, "disable": OpKind.DISABLE}[func]
         assert(self.kind == "exit")
+    def __str__(self):
+        return f"TailTrace {self.tsc}"
 
 class _LockOp:
     def __init__(self, head_trace, tail_trace):
@@ -264,6 +270,9 @@ class _LockOp:
         self.site_id = head_trace.site_id
         self.ins_id = head_trace.ins_id
         self.duration = self.exit_tsc - self.enter_tsc
+
+    def __str__(self):
+        return f"(site, ins) = {self.site_id, self.ins_id}, op: {self.op}, tid: {self.tid}, enter_ts: {self.enter_tsc}, exit_ts: {self.exit_tsc}"
 
 class DylinxLockCycle:
     def __init__(self, enable, disable):
@@ -287,13 +296,54 @@ class DylinxLockCycle:
     def serialize(self):
         pass
 
+def smooth(y, box_pts):
+    box = np.ones(box_pts)/box_pts
+    y_smooth = np.convolve(y, box, mode='same')
+    return y_smooth
+
+def moving_average(a, n):
+    ret = np.cumsum(a, dtype=float)
+    ret[n:] = ret[n:] - ret[:-n]
+    return ret / n
+
+class SiteFluctuation:
+    def __init__(self, s_tick, e_tick, cycles, site_id, stable_threshold=0.005, window_ratio=0.01, get_stable=False):
+        self.s_tick = s_tick
+        self.e_tick = e_tick
+        self.stable_threshold = stable_threshold
+        self.window_ratio = window_ratio
+        self.get_stable = get_stable
+        self.involve_cycles = filter(lambda c: c.site_id == site_id, cycles)
+        timeline_len = self.e_tick - self.s_tick + 1
+        y = np.zeros(timeline_len)
+        for cycle in self.involve_cycles:
+            y[cycle.attempt - self.s_tick: cycle.release - self.s_tick] += 1
+        self.y_raw = np.copy(y)
+        if not get_stable:
+            return
+        self.y_smooth = moving_average(y, int(y.shape[0] * window_ratio))
+        self.y_diff = np.gradient(self.y_smooth, 0.00001)
+        self.stable_region = (self.y_diff > -stable_threshold) & (self.y_diff < stable_threshold)
+        n_stable_tick = np.count_nonzero(self.stable_region & (self.y_smooth != 0))
+        total_tick = np.count_nonzero(y_smooth)
+        self.stable_ratio = n_stable_tick / total_tick
+
+def pair_first(operations):
+    front = operations[0]
+    if front.op != OpKind.ENABLE:
+        return front, None
+    for left in operations[1:]:
+        if left.op == OpKind.DISABLE and left.site_id == front.site_id and left.ins_id == front.ins_id:
+            return front, left
+    return front, None
+
 class DylinxRuntimeReport:
-    def __init__(self, xray_path):
+    def __init__(self, xray_path, drop_useless=False):
         pattern = re.compile(r"- { type: 0, func-id: \d+, function: dlx_forward_(enable|disable),(?: args: \[ (\d+) \],)? cpu: (\d*), thread: (\d*). process: (\d*), kind: function-(enter\-arg|exit), tsc: (\d*), data: '' }")
         with open(xray_path) as xray_file:
             xray_log = xray_file.read()
             entries = re.findall(pattern, xray_log)
-            traces = list(map(lambda groups: _TailTrace(groups) if groups[1] == "" else _HeadTrace(groups), entries))
+            traces = list(map(lambda groups: _TailTrace(groups) if groups[-2] == "exit" else _HeadTrace(groups), entries))
         pid = {t.pid for t in traces}
         assert(len(pid) == 1) # xray log should contain only single main thread.
         main_tid = list(pid)[0]
@@ -301,8 +351,7 @@ class DylinxRuntimeReport:
         self.cycles = []
         for tid in threads:
             traces_by_tid = list(filter(lambda trace: trace.tid == tid, traces))
-            self.cycles = self.cycles + self.pair_thread_traces(traces_by_tid)
-        print("cycle processing complete")
+            self.cycles = self.cycles + self.pair_thread_traces(traces_by_tid, drop_useless)
 
         self.site2ins = {}
         for trace in filter(lambda t: isinstance(t, _HeadTrace), traces):
@@ -312,40 +361,102 @@ class DylinxRuntimeReport:
                 self.site2ins[site_id] = {ins_id}
             else:
                 self.site2ins[site_id].add(ins_id)
-        print(self.site2ins)
 
+        self.s_tick = min(self.cycles, key=lambda c: c.attempt).attempt
+        self.e_tick = max(self.cycles, key=lambda c: c.release).release
+        self.timeline_len = self.e_tick - self.s_tick + 1
+        self.site2fluc = None
 
-    def pair_thread_traces(self, traces):
+    def pair_thread_traces(self, traces, drop_useless):
         sorted_traces = sorted(traces, key=lambda t: t.tsc)
-        assert(len(traces) % 2 == 0)
+        if not drop_useless:
+            assert(len(traces) % 2 == 0)
+
+        ops = []
+        first_trace =  next((t for t in sorted_traces if isinstance(t, _HeadTrace)), None)
+        offset = sorted_traces.index(first_trace)
+        for i_pair in range((len(sorted_traces) - offset) // 2):
+            head = sorted_traces[i_pair * 2 + offset]
+            tail = sorted_traces[i_pair * 2 + 1 + offset]
+            assert(head.op == tail.op)
+            curr_call = _LockOp(head, tail)
+            ops.append(curr_call)
+
         cycles = []
-        stack = []
-        for i_pair in range(len(sorted_traces) // 2):
-            curr_call = _LockOp(sorted_traces[i_pair * 2], sorted_traces[i_pair * 2 + 1])
-            if curr_call.op == OpKind.ENABLE:
-                stack.append(curr_call)
-            if curr_call.op == OpKind.DISABLE:
-                prev_call = stack.pop()
-                if prev_call.op != OpKind.ENABLE or (curr_call.site_id, curr_call.ins_id) != (prev_call.site_id, prev_call.ins_id):
-                    raise ValueError(f"[ ERROR ] Disable and enable op pair aren't matched")
-                cycles.append(DylinxLockCycle(prev_call, curr_call))
+        front, paired = pair_first(ops)
+        if paired != None:
+            cycles.append(DylinxLockCycle(front, paired))
+
+        while (paired != None or len(ops) > 2):
+            ops.remove(front)
+            if paired != None:
+                ops.remove(paired)
+            if len(ops) < 2:
+                break
+            front, paired = pair_first(ops)
+            if paired != None:
+                cycles.append(DylinxLockCycle(front, paired))
+        print(len(cycles), "n_cycles")
         return cycles
+
+    def gen_bool_fluc(self, unit=1000000, top_n=10):
+        print(f"x axis len {self.timeline_len // unit + 10}")
+        site2fluc = {site_id: np.zeros(self.timeline_len // unit + 10) for site_id in self.site2ins.keys()}
+        for cycle in self.cycles:
+            start_ts = (cycle.attempt - self.s_tick) // unit
+            end_ts = (cycle.release - self.s_tick) // unit
+            site2fluc[cycle.site_id][start_ts: end_ts + 1] = 1
+        site_ids = site2fluc.keys()
+        site_ids = sorted(site_ids, key=lambda s: -np.count_nonzero(site2fluc[s]))
+        for site, fluc in site2fluc.items():
+            print(f"[site {site}]: non-zero {np.count_nonzero(fluc)} {np.count_nonzero(fluc) / (self.timeline_len // unit + 10)}")
+        cmap = mpl.colors.ListedColormap(['antiquewhite', 'k'])
+        bounds = [0., 0.5, 1.]
+        norm = mpl.colors.BoundaryNorm(bounds, cmap.N)
+        fig, axes = plt.subplots(top_n, 1, sharex=True, constrained_layout=True)
+        fig.set_size_inches(12, top_n * 1)
+        for i, site_id in enumerate(site_ids[:top_n]):
+            fluc = site2fluc[site_id]
+            x = np.array([fluc, ]* 300)
+            ax = axes if len(site2fluc.keys()) == 1 else axes[i]
+            ax.imshow(x, interpolation='none', cmap=cmap, norm=norm)
+            ax.get_yaxis().set_visible(False)
+            ax.set_title(
+                f"Active period, site[{site_id}]"
+            )
+        ax.set_xlabel(f"Timeline ({unit} cycles)")
+        plt.savefig("test.png")
+        return site2fluc
+
+    def q_entity_curve_eval(self, stable_threshold=0.005, window_ratio=0.01, get_stable=False, sieve=None):
+        site2stability = {}
+        iter_keys = sieve(self.site2ins.keys()) if sieve != None else self.site2ins.keys()
+        self.site2fluc  = {
+            site_id: SiteFluctuation(self.s_tick, self.e_tick, self.cycles, site_id)
+            for site_id in iter_keys
+        }
 
     # Should we plot from main function
     def plot_lifetime_superposition_graph(self, fig_path):
-        fig, axes = plt.subplots(len(self.site2ins.keys()), 1, sharex=True)
-        fig.tight_layout(pad=3.0)
+        if self.site2fluc == None:
+            raise ValueError("q_entity_curve_eval method should be called first before ploting")
+        fig, axes = plt.subplots(len(self.site2fluc.keys()), 1, sharex=True, constrained_layout=True)
+        fig.set_size_inches(12, len(self.site2fluc.keys()) * 3)
         # Current version starts from the first lock related op.
-        s_tick = min(self.cycles, key=lambda c: c.attempt).attempt
-        e_tick = max(self.cycles, key=lambda c: c.release).release
-        timeline_len = e_tick - s_tick + 1
-        x = np.arange(timeline_len)
-        for i, site in enumerate(self.site2ins.keys()):
-            y = np.zeros(timeline_len)
-            involve_cycles = filter(lambda c: c.site_id == site, self.cycles)
-            for cycle in involve_cycles:
-                y[cycle.attempt - s_tick: cycle.release - s_tick] += 1
-            axes[i].set_title(f"lifetime superposition for site {site}")
-            axes[i].plot(x, y)
+        x = np.arange(self.timeline_len)
+        for i, pair in enumerate(self.site2fluc.items()):
+            site_id, fluc = pair
+            ax = axes if len(self.site2fluc.keys()) == 1 else axes[i]
+            ax.plot(x, fluc.y_raw)
+            if fluc.get_stable:
+                ax.plot(x, self.site2fluc[site_id].y_smooth, color="orange", alpha=0.5)
+                ax.fill_between(
+                    x, site2fluc[site_id].y_smooth,
+                    where=site2fluc[site_id].stable_region, color="orange", alpha=0.5
+                )
+            ax.set_title(
+                f"Number of thread in queueing system, site[{site_id}]"
+            )
+        ax.set_xlabel("Timeline (cycle)")
         plt.savefig(fig_path)
 
