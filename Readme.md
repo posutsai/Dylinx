@@ -66,6 +66,6 @@ All concrete codes locates in [memcached directory](sample/memcached).
    ```
    After this step, the integration is done and there will be a `dylinx-insertion.yaml` file in memcached directory. It reveals the identified mutexes and their corresponding location (path, line number, name ....).
 
-5. By default, Dylinx offers 4 mutex implementation in its library. If n mutexes are identified, the search space is $4^n$. When the number of mutexes increases, the search space expands exponentially. It is necessary to design your own strategy to explore the oversized search space and obtain the optimal arrangement.
+5. By default, Dylinx offers 4 mutex implementation in its library. If n mutexes are identified, the search space is 4^n. When the number of mutexes increases, the search space expands exponentially. It is necessary to design your own strategy to explore the oversized search space and obtain the optimal arrangement.
 
 ps. Please refer to wiki for all the details of memcached example.
