@@ -49,7 +49,9 @@ All concrete codes locates in [memcached directory](sample/memcached).
    Please refer to [dylinx.mk](sample/memcached/dylinx.mk). After memcached's Makefile is generated from the previous step, `dylinx.mk` declare another variable `DYLINX_LIB_WITH_GLUE` which allow compiler to locate Dylinx glue library and link it. Note that Dylinx automatically generates a temporary directory `.dylinx` for those required glue files and `libdlx-init.a` locates in it. Make sure your Clang is able to find the library.
 
 4. Implement Child Class
+
    Please refer to `DylinxSubject` in [server.py](sample/memcached/server.py). Users should implement `build_repo`, `execute_repo` and `stop_repo` methods for their own application. In this example, the executable (`memcached-dlx`) is built, executed and killed by spawning a child process.
+   
    ```Python
    class DylinxSubject:
      def __init__(self, compiler_database_path):
@@ -64,6 +66,7 @@ All concrete codes locates in [memcached directory](sample/memcached).
      def stop_repo(self):
        # send terminate signal
    ```
+   
    After this step, the integration is done and there will be a `dylinx-insertion.yaml` file in memcached directory. It reveals the identified mutexes and their corresponding location (path, line number, name ....).
 
 5. By default, Dylinx offers 4 mutex implementation in its library. If n mutexes are identified, the search space is 4^n. When the number of mutexes increases, the search space expands exponentially. It is necessary to design your own strategy to explore the oversized search space and obtain the optimal arrangement.
